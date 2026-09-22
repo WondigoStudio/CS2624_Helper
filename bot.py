@@ -42,6 +42,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    psycopg2 = None
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -62,19 +68,32 @@ from telegram.ext import (
 # committed to git or hard-coded in the file. Set it in Render's dashboard
 # under Environment. Locally you can export it before running, e.g.:
 #   export BOT_TOKEN="123456:ABC..."   (Windows: set BOT_TOKEN=123456:ABC...)
+# Only required to actually start the bot (checked in main()) — importing
+# this module for other purposes (e.g. migrate_to_postgres.py) works without it.
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-if not BOT_TOKEN:
-    raise SystemExit(
-        "BOT_TOKEN is not set. Set it as an environment variable "
-        "(locally: export BOT_TOKEN=...; on Render: Environment tab)."
-    )
 
 # Where the SQLite file lives. On Render, point this (via the DB_PATH env
 # var) at your persistent disk's mount path, e.g. /var/data/homework.db —
 # otherwise the database is wiped on every deploy/restart (Render's default
 # filesystem is ephemeral). Locally this just defaults to a file next to
-# this script.
+# this script. IGNORED if DATABASE_URL is set (see below).
 DB_PATH = Path(os.environ.get("DB_PATH", str(Path(__file__).parent / "homework.db")))
+
+# If set, the bot uses this Postgres database instead of the local SQLite
+# file — this is the "online DB" that survives redeploys/restarts on its
+# own, with no disk to attach. Get a free, permanent Postgres database from
+# https://neon.tech (or Supabase, or Render's own Postgres — Render's free
+# Postgres auto-deletes after 30 days, so Neon/Supabase are the safer free
+# choice). The connection string looks like:
+#   postgresql://user:password@host/dbname?sslmode=require
+# Put it in the DATABASE_URL environment variable, locally or on Render.
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+USE_POSTGRES = bool(DATABASE_URL)
+if USE_POSTGRES and psycopg2 is None:
+    raise SystemExit(
+        "DATABASE_URL is set but psycopg2 isn't installed. "
+        "Run: pip install -r requirements.txt"
+    )
 
 TIMEZONE = ZoneInfo("Asia/Almaty")
 
@@ -159,18 +178,53 @@ def start_health_check_server():
     logger.info("Health-check server listening on port %s", port)
 
 def db():
+    if USE_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        return _PGConn(conn)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
+class _PGConn:
+    """Thin wrapper so the rest of the code (written for sqlite3) can use a
+    Postgres connection unchanged: '?' placeholders are translated to '%s',
+    and RealDictCursor rows already support row["col"] like sqlite3.Row."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=()):
+        cur = self._conn.cursor()
+        cur.execute(sql.replace("?", "%s"), params)
+        return cur
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
+
+def _existing_columns(conn, table: str) -> set:
+    """PRAGMA table_info doesn't exist in Postgres; this works on both."""
+    if USE_POSTGRES:
+        cur = conn.execute(
+            "SELECT column_name AS name FROM information_schema.columns WHERE table_name = ?",
+            (table,),
+        )
+        return {r["name"] for r in cur.fetchall()}
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
 def init_db():
     conn = db()
+    id_pk = "SERIAL PRIMARY KEY" if USE_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     conn.execute(
-        """
+        f"""
         CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
+            id {id_pk},
+            chat_id BIGINT NOT NULL,
             subject TEXT NOT NULL,
             title TEXT NOT NULL,
             due_date TEXT NOT NULL,
@@ -184,7 +238,7 @@ def init_db():
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chats (
-            chat_id INTEGER PRIMARY KEY,
+            chat_id BIGINT PRIMARY KEY,
             username TEXT,
             first_name TEXT,
             last_name TEXT,
@@ -193,10 +247,10 @@ def init_db():
         """
     )
     conn.execute(
-        """
+        f"""
         CREATE TABLE IF NOT EXISTS schedule (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
+            id {id_pk},
+            chat_id BIGINT NOT NULL,
             weekday INTEGER NOT NULL,
             time TEXT NOT NULL,
             subject TEXT NOT NULL,
@@ -208,7 +262,7 @@ def init_db():
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS room_photos (
-            chat_id INTEGER NOT NULL,
+            chat_id BIGINT NOT NULL,
             room TEXT NOT NULL,
             file_id TEXT NOT NULL,
             kind TEXT NOT NULL DEFAULT 'photo',
@@ -216,18 +270,25 @@ def init_db():
         )
         """
     )
-    existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    existing_cols = _existing_columns(conn, "tasks")
     if "due_time" not in existing_cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN due_time TEXT")
     if "created_by" not in existing_cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN created_by TEXT")
-    room_cols = {row["name"] for row in conn.execute("PRAGMA table_info(room_photos)")}
+    room_cols = _existing_columns(conn, "room_photos")
     if "kind" not in room_cols:
         conn.execute("ALTER TABLE room_photos ADD COLUMN kind TEXT NOT NULL DEFAULT 'photo'")
-    chat_cols = {row["name"] for row in conn.execute("PRAGMA table_info(chats)")}
+    chat_cols = _existing_columns(conn, "chats")
     for col in ("username", "first_name", "last_name", "updated_at"):
         if col not in chat_cols:
             conn.execute(f"ALTER TABLE chats ADD COLUMN {col} TEXT")
+    if USE_POSTGRES:
+        # Widen chat_id to BIGINT for anyone whose database was created by
+        # an earlier version of this schema that used plain INTEGER —
+        # modern Telegram user/chat ids commonly exceed the 32-bit range.
+        # Safe/no-op if the column is already BIGINT.
+        for table in ("chats", "tasks", "schedule", "room_photos"):
+            conn.execute(f"ALTER TABLE {table} ALTER COLUMN chat_id TYPE BIGINT")
     conn.commit()
     conn.close()
 
@@ -1309,6 +1370,11 @@ async def send_morning_schedule(context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    if not BOT_TOKEN:
+        raise SystemExit(
+            "BOT_TOKEN is not set. Set it as an environment variable "
+            "(locally: export BOT_TOKEN=...; on Render: Environment tab)."
+        )
     init_db()
     start_health_check_server()
     app = Application.builder().token(BOT_TOKEN).build()
