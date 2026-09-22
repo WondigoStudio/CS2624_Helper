@@ -1,0 +1,26 @@
+# Render Blueprint. In the Render dashboard: New + -> Blueprint -> pick this
+# repo, and Render reads this file automatically.
+#
+# type: worker = a "Background Worker" — no public URL, no $PORT needed,
+# perfect for a Telegram bot that uses long polling. Background Workers are
+# on Render's paid plans; there's no free background worker tier as of this
+# writing. If you only want to try things on the free tier, change `type`
+# below to `web` instead — see the README section "Free tier" for the extra
+# steps that requires.
+#
+# Storage: DATABASE_URL points at an online Postgres database (e.g. a free
+# permanent one from neon.tech), so no persistent disk is needed here at
+# all — the database lives independently of this service and survives
+# redeploys/restarts on its own.
+services:
+  - type: worker
+    name: homework-bot
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false   # paste your BotFather token manually in the Render dashboard
+      - key: DATABASE_URL
+        sync: false   # paste your Postgres connection string (e.g. from neon.tech) manually
