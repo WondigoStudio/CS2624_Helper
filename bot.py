@@ -147,6 +147,15 @@ EDIT_TASK_PICK, EDIT_TASK_FIELD, EDIT_TASK_SUBJECT, EDIT_TASK_TITLE, EDIT_TASK_D
 # Conversation states for /editschedule (edit an existing timetable lesson)
 EDIT_LESSON_PICK, EDIT_LESSON_FIELD, EDIT_LESSON_WEEKDAY, EDIT_LESSON_SUBJECT, EDIT_LESSON_TIME, EDIT_LESSON_ROOM = range(18, 24)
 
+# Extra states for /add: description (after title) and attachment (after time)
+TYPING_DESCRIPTION, TYPING_ATTACHMENT = range(24, 26)
+
+# Extra state for /edittask: editing description or attachment of an existing task
+EDIT_TASK_DESCRIPTION, EDIT_TASK_ATTACHMENT = range(26, 28)
+
+# How long before a lesson starts to send a heads-up reminder
+LESSON_REMINDER_MINUTES = 10
+
 WEEKDAY_NAMES_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 WEEKDAY_NAMES_FULL_RU = [
     "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье",
@@ -233,11 +242,14 @@ def init_db():
             chat_id BIGINT NOT NULL,
             subject TEXT NOT NULL,
             title TEXT NOT NULL,
+            description TEXT,
             due_date TEXT NOT NULL,
             due_time TEXT,
             done INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
-            created_by TEXT
+            created_by TEXT,
+            attachment_file_id TEXT,
+            attachment_kind TEXT
         )
         """
     )
@@ -281,6 +293,12 @@ def init_db():
         conn.execute("ALTER TABLE tasks ADD COLUMN due_time TEXT")
     if "created_by" not in existing_cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN created_by TEXT")
+    if "description" not in existing_cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN description TEXT")
+    if "attachment_file_id" not in existing_cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN attachment_file_id TEXT")
+    if "attachment_kind" not in existing_cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN attachment_kind TEXT")
     room_cols = _existing_columns(conn, "room_photos")
     if "kind" not in room_cols:
         conn.execute("ALTER TABLE room_photos ADD COLUMN kind TEXT NOT NULL DEFAULT 'photo'")
@@ -322,12 +340,16 @@ def register_chat(update: Update):
     conn.close()
 
 
-def add_task(chat_id: int, subject: str, title: str, due_date: str, due_time: str = None, created_by: str = None):
+def add_task(chat_id: int, subject: str, title: str, due_date: str, due_time: str = None,
+             created_by: str = None, description: str = None,
+             attachment_file_id: str = None, attachment_kind: str = None):
     conn = db()
     conn.execute(
-        "INSERT INTO tasks (chat_id, subject, title, due_date, due_time, created_at, created_by) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (chat_id, subject, title, due_date, due_time, now_kz().isoformat(), created_by),
+        "INSERT INTO tasks (chat_id, subject, title, due_date, due_time, created_at, "
+        "created_by, description, attachment_file_id, attachment_kind) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (chat_id, subject, title, due_date, due_time, now_kz().isoformat(),
+         created_by, description, attachment_file_id, attachment_kind),
     )
     conn.commit()
     conn.close()
@@ -367,7 +389,7 @@ def delete_task(task_id: int):
 
 # whitelisted so it's always a fixed, known column name — never built from
 # unsanitized user input, even though it's f-string-interpolated below
-_TASK_EDITABLE_FIELDS = {"subject", "title", "due_date", "due_time"}
+_TASK_EDITABLE_FIELDS = {"subject", "title", "due_date", "due_time", "description"}
 
 
 def update_task_field(task_id: int, field: str, value):
@@ -375,6 +397,16 @@ def update_task_field(task_id: int, field: str, value):
         raise ValueError(f"Not an editable task field: {field}")
     conn = db()
     conn.execute(f"UPDATE tasks SET {field} = ? WHERE id = ?", (value, task_id))
+    conn.commit()
+    conn.close()
+
+
+def update_task_attachment(task_id: int, file_id, kind):
+    conn = db()
+    conn.execute(
+        "UPDATE tasks SET attachment_file_id = ?, attachment_kind = ? WHERE id = ?",
+        (file_id, kind, task_id),
+    )
     conn.commit()
     conn.close()
 
@@ -517,7 +549,11 @@ def format_task_line(row) -> str:
         tag = " ⏰ завтра"
     time_part = f" {row['due_time']}" if row["due_time"] else ""
     by_part = f" (добавил: {row['created_by']})" if row["created_by"] else ""
-    return f"#{row['id']} [{SUBJECT_NAME[row['subject']]}] {row['title']} — {d.strftime('%d.%m.%Y')}{time_part}{tag}{by_part}"
+    attach_part = " 📎" if row["attachment_file_id"] else ""
+    line = f"#{row['id']} [{SUBJECT_NAME[row['subject']]}] {row['title']} — {d.strftime('%d.%m.%Y')}{time_part}{tag}{attach_part}{by_part}"
+    if row["description"]:
+        line += f"\n    📝 {row['description']}"
+    return line
 
 
 def subject_keyboard(prefix: str):
@@ -579,7 +615,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/all — все предстоящие задания\n"
         "/done — отметить задание выполненным\n"
         "/delete — удалить задание\n"
-        "/edittask — изменить задание (предмет/текст/дату/время)\n"
+        "/edittask — изменить задание (предмет/текст/описание/дату/время/вложение)\n"
+        "/taskfile — показать вложение (фото/файл) у задания\n"
         "/calendar — календарь месяца кнопками: зелёная — свободный день, "
         "красная — есть задание, синяя — сегодня. Нажми на день — покажу "
         "что на него задано\n\n"
@@ -601,7 +638,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Каждый день в {REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d} по времени Казахстана "
         "(UTC+5) я буду присылать напоминание о заданиях на сегодня и завтра.\n"
         f"А в {SCHEDULE_HOUR:02d}:{SCHEDULE_MINUTE:02d} — расписание на сегодня и фото "
-        "кабинетов, если они сохранены."
+        "кабинетов, если они сохранены.\n"
+        f"Плюс за {LESSON_REMINDER_MINUTES} минут до каждой пары пришлю короткое напоминание."
     )
 
 
@@ -626,7 +664,31 @@ async def add_subject_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def add_title_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_title"] = update.message.text.strip()
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Без описания", callback_data="nodesc")]
+    ])
     await update.message.reply_text(
+        "Добавь подробное описание задания (что именно нужно сделать, номера "
+        "заданий и т.п.), или нажми кнопку, если название всё уже объясняет.",
+        reply_markup=keyboard,
+    )
+    return TYPING_DESCRIPTION
+
+
+async def add_description_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["new_description"] = update.message.text.strip()
+    await update.message.reply_text(
+        "Когда сдавать? Напиши дату в формате ДД.ММ или ДД.ММ.ГГГГ, "
+        "либо просто «сегодня» / «завтра»."
+    )
+    return TYPING_DATE
+
+
+async def add_description_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["new_description"] = None
+    await query.edit_message_text(
         "Когда сдавать? Напиши дату в формате ДД.ММ или ДД.ММ.ГГГГ, "
         "либо просто «сегодня» / «завтра»."
     )
@@ -653,16 +715,38 @@ async def add_date_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return TYPING_TIME
 
 
-async def _finish_add_task(target_message, context: ContextTypes.DEFAULT_TYPE, chat_id: int, due_time: str, creator_name: str = None):
+async def _prompt_for_attachment(target_message):
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Без вложения", callback_data="noattach")]
+    ])
+    await target_message(
+        "Прикрепи фото или файл к заданию (скан условия, фото с доски и т.п.), "
+        "или нажми кнопку, если вложение не нужно.",
+        reply_markup=keyboard,
+    )
+
+
+async def _finish_add_task(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int,
+    attachment_file_id: str = None, attachment_kind: str = None,
+):
     subject = context.user_data.pop("new_subject")
     title = context.user_data.pop("new_title")
+    description = context.user_data.pop("new_description", None)
     due_date_iso = context.user_data.pop("new_date")
-    add_task(chat_id, subject, title, due_date_iso, due_time or None, created_by=creator_name)
+    due_time = context.user_data.pop("new_time", "")
+    creator_name = context.user_data.pop("new_creator", None)
+    add_task(
+        chat_id, subject, title, due_date_iso, due_time or None,
+        created_by=creator_name, description=description,
+        attachment_file_id=attachment_file_id, attachment_kind=attachment_kind,
+    )
 
     d = datetime.strptime(due_date_iso, "%Y-%m-%d").date()
     time_part = f", {due_time}" if due_time else ""
-    text = f"Готово ✅\n[{SUBJECT_NAME[subject]}] {title} — {d.strftime('%d.%m.%Y')}{time_part}"
-    await target_message(text)
+    desc_part = f"\n📝 {description}" if description else ""
+    attach_part = "\n📎 вложение сохранено" if attachment_file_id else ""
+    return f"Готово ✅\n[{SUBJECT_NAME[subject]}] {title} — {d.strftime('%d.%m.%Y')}{time_part}{desc_part}{attach_part}"
 
 
 def user_short_name(update: Update) -> str:
@@ -680,26 +764,57 @@ async def add_time_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "или «нет», если время не нужно."
         )
         return TYPING_TIME
-
-    await _finish_add_task(
-        update.message.reply_text, context, SHARED_TASKS_ID, t, user_short_name(update)
-    )
-    return ConversationHandler.END
+    context.user_data["new_time"] = t
+    context.user_data["new_creator"] = user_short_name(update)
+    await _prompt_for_attachment(update.message.reply_text)
+    return TYPING_ATTACHMENT
 
 
 async def add_time_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await _finish_add_task(
-        query.edit_message_text, context, SHARED_TASKS_ID, "", user_short_name(update)
-    )
+    context.user_data["new_time"] = ""
+    context.user_data["new_creator"] = user_short_name(update)
+    await query.edit_message_text("Без точного времени.")
+    await _prompt_for_attachment(query.message.reply_text)
+    return TYPING_ATTACHMENT
+
+
+async def add_attachment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    file_id = update.message.photo[-1].file_id
+    text = await _finish_add_task(context, SHARED_TASKS_ID, file_id, "photo")
+    await update.message.reply_text(text)
     return ConversationHandler.END
+
+
+async def add_attachment_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    doc = update.message.document
+    text = await _finish_add_task(context, SHARED_TASKS_ID, doc.file_id, "document")
+    await update.message.reply_text(text)
+    return ConversationHandler.END
+
+
+async def add_attachment_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    text = await _finish_add_task(context, SHARED_TASKS_ID)
+    await query.edit_message_text(text)
+    return ConversationHandler.END
+
+
+async def add_attachment_invalid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Это не похоже на фото или файл. Пришли картинку/документ, или нажми "
+        "«Без вложения»."
+    )
+    return TYPING_ATTACHMENT
 
 
 async def add_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("Отменено.")
     return ConversationHandler.END
+
 
 
 async def today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -789,6 +904,41 @@ async def delete_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- /edittask: change subject, title, date or time of an existing task ---
 
+async def taskfile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lets anyone re-send the attachment of a task that has one, without
+    scrolling back to find the original message."""
+    register_chat(update)
+    rows = [r for r in get_tasks(SHARED_TASKS_ID, only_undone=False) if r["attachment_file_id"]]
+    if not rows:
+        await update.message.reply_text("Ни у одного задания пока нет вложения.")
+        return
+    buttons = [
+        [InlineKeyboardButton(
+            f"{SUBJECT_NAME[r['subject']]}: {r['title'][:35]}",
+            callback_data=f"taskfile:{r['id']}",
+        )]
+        for r in rows
+    ]
+    await update.message.reply_text(
+        "У какого задания показать вложение?", reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def taskfile_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    task_id = int(query.data.split(":")[1])
+    task = get_task(task_id)
+    if not task or not task["attachment_file_id"]:
+        await query.message.reply_text("Вложение не найдено.")
+        return
+    caption = f"[{SUBJECT_NAME[task['subject']]}] {task['title']}"
+    if task["attachment_kind"] == "document":
+        await query.message.reply_document(document=task["attachment_file_id"], caption=caption)
+    else:
+        await query.message.reply_photo(photo=task["attachment_file_id"], caption=caption)
+
+
 async def edittask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     rows = get_tasks(SHARED_TASKS_ID, only_undone=False)
@@ -812,8 +962,10 @@ def _edit_task_field_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Предмет", callback_data="editfield:subject")],
         [InlineKeyboardButton("Текст задания", callback_data="editfield:title")],
+        [InlineKeyboardButton("Описание", callback_data="editfield:description")],
         [InlineKeyboardButton("Дата", callback_data="editfield:due_date")],
         [InlineKeyboardButton("Время", callback_data="editfield:due_time")],
+        [InlineKeyboardButton("Вложение", callback_data="editfield:attachment")],
     ])
 
 
@@ -854,6 +1006,24 @@ async def edittask_field_chosen(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=keyboard,
         )
         return EDIT_TASK_TIME
+    if field == "description":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Убрать описание", callback_data="edittaskdesc:none")]
+        ])
+        await query.edit_message_text(
+            "Напиши новое описание, или нажми кнопку, чтобы убрать его:",
+            reply_markup=keyboard,
+        )
+        return EDIT_TASK_DESCRIPTION
+    if field == "attachment":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Убрать вложение", callback_data="edittaskattach:none")]
+        ])
+        await query.edit_message_text(
+            "Пришли новое фото/файл вложения, или нажми кнопку, чтобы убрать его:",
+            reply_markup=keyboard,
+        )
+        return EDIT_TASK_ATTACHMENT
 
 
 async def edittask_subject_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -910,6 +1080,56 @@ async def edittask_time_skip(update: Update, context: ContextTypes.DEFAULT_TYPE)
     update_task_field(task_id, "due_time", None)
     await query.edit_message_text("Готово ✅ Время убрано.")
     return ConversationHandler.END
+
+
+async def edittask_description_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    task_id = context.user_data.pop("edit_task_id")
+    new_description = update.message.text.strip()
+    update_task_field(task_id, "description", new_description)
+    await update.message.reply_text("Готово ✅ Описание обновлено.")
+    return ConversationHandler.END
+
+
+async def edittask_description_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    task_id = context.user_data.pop("edit_task_id")
+    update_task_field(task_id, "description", None)
+    await query.edit_message_text("Готово ✅ Описание убрано.")
+    return ConversationHandler.END
+
+
+async def edittask_attachment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    task_id = context.user_data.pop("edit_task_id")
+    file_id = update.message.photo[-1].file_id
+    update_task_attachment(task_id, file_id, "photo")
+    await update.message.reply_text("Готово ✅ Вложение обновлено.")
+    return ConversationHandler.END
+
+
+async def edittask_attachment_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    task_id = context.user_data.pop("edit_task_id")
+    doc = update.message.document
+    update_task_attachment(task_id, doc.file_id, "document")
+    await update.message.reply_text("Готово ✅ Вложение обновлено.")
+    return ConversationHandler.END
+
+
+async def edittask_attachment_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    task_id = context.user_data.pop("edit_task_id")
+    update_task_attachment(task_id, None, None)
+    await query.edit_message_text("Готово ✅ Вложение убрано.")
+    return ConversationHandler.END
+
+
+async def edittask_attachment_invalid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Это не похоже на фото или файл. Пришли картинку/документ, или нажми "
+        "«Убрать вложение»."
+    )
+    return EDIT_TASK_ATTACHMENT
 
 
 def weekday_keyboard(prefix: str):
@@ -1645,6 +1865,44 @@ async def send_morning_schedule(context: ContextTypes.DEFAULT_TYPE):
             logger.warning("Could not send morning schedule to chat %s: %s", chat_id, e)
 
 
+async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
+    """Runs every minute: for each chat, finds any lesson today whose start
+    time is exactly LESSON_REMINDER_MINUTES from now, and sends a heads-up.
+    Minute-granularity matching means each lesson fires once, at the minute
+    that lines up — no separate dedupe bookkeeping needed."""
+    now = now_kz()
+    weekday = now.weekday()
+    target_time = (now + timedelta(minutes=LESSON_REMINDER_MINUTES)).strftime("%H:%M")
+
+    for chat_id in all_chat_ids():
+        rows = get_lessons(chat_id, weekday)
+        for r in rows:
+            if r["time"] != target_time:
+                continue
+            text = (
+                f"⏰ Через {LESSON_REMINDER_MINUTES} минут: "
+                f"[{SUBJECT_NAME[r['subject']]}] в {r['time']}, каб. {r['room']}"
+            )
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+            except Exception as e:
+                logger.warning("Could not send lesson reminder to chat %s: %s", chat_id, e)
+                continue
+
+            photo = get_room_photo(chat_id, r["room"])
+            if not photo:
+                continue
+            file_id, kind = photo
+            try:
+                caption = f"📍 Кабинет {r['room']}"
+                if kind == "document":
+                    await context.bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
+                else:
+                    await context.bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
+            except Exception as e:
+                logger.warning("Could not send room photo reminder to chat %s: %s", chat_id, e)
+
+
 def main():
     if not BOT_TOKEN:
         raise SystemExit(
@@ -1660,10 +1918,20 @@ def main():
         states={
             CHOOSING_SUBJECT: [CallbackQueryHandler(add_subject_chosen, pattern="^addsub:")],
             TYPING_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_title_typed)],
+            TYPING_DESCRIPTION: [
+                CallbackQueryHandler(add_description_skip, pattern="^nodesc$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_description_typed),
+            ],
             TYPING_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_date_typed)],
             TYPING_TIME: [
                 CallbackQueryHandler(add_time_skip, pattern="^notime$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_time_typed),
+            ],
+            TYPING_ATTACHMENT: [
+                CallbackQueryHandler(add_attachment_skip, pattern="^noattach$"),
+                MessageHandler(filters.PHOTO, add_attachment_photo),
+                MessageHandler(filters.Document.IMAGE | filters.Document.PDF, add_attachment_document),
+                MessageHandler(~filters.COMMAND, add_attachment_invalid),
             ],
         },
         fallbacks=[CommandHandler("cancel", add_cancel)],
@@ -1707,6 +1975,16 @@ def main():
                 CallbackQueryHandler(edittask_time_skip, pattern="^edittasktime:none$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_time_typed),
             ],
+            EDIT_TASK_DESCRIPTION: [
+                CallbackQueryHandler(edittask_description_clear, pattern="^edittaskdesc:none$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_description_typed),
+            ],
+            EDIT_TASK_ATTACHMENT: [
+                CallbackQueryHandler(edittask_attachment_clear, pattern="^edittaskattach:none$"),
+                MessageHandler(filters.PHOTO, edittask_attachment_photo),
+                MessageHandler(filters.Document.IMAGE | filters.Document.PDF, edittask_attachment_document),
+                MessageHandler(~filters.COMMAND, edittask_attachment_invalid),
+            ],
         },
         fallbacks=[CommandHandler("cancel", add_cancel)],
     )
@@ -1737,6 +2015,8 @@ def main():
     app.add_handler(CallbackQueryHandler(done_chosen, pattern="^done:"))
     app.add_handler(CommandHandler("delete", delete_cmd))
     app.add_handler(CallbackQueryHandler(delete_chosen, pattern="^del:"))
+    app.add_handler(CommandHandler("taskfile", taskfile_cmd))
+    app.add_handler(CallbackQueryHandler(taskfile_chosen, pattern="^taskfile:"))
     app.add_handler(CommandHandler("calendar", calendar_cmd))
     app.add_handler(CallbackQueryHandler(calendar_nav, pattern="^cal:"))
     app.add_handler(CallbackQueryHandler(calendar_day_tap, pattern="^day:"))
@@ -1763,6 +2043,9 @@ def main():
         send_morning_schedule,
         time=dtime(hour=SCHEDULE_HOUR, minute=SCHEDULE_MINUTE, tzinfo=TIMEZONE),
     )
+    # checked once a minute so a "10 minutes before" reminder can fire at
+    # the right minute for any lesson, any day
+    app.job_queue.run_repeating(check_lesson_reminders, interval=60, first=5)
 
     logger.info("Bot starting (polling)...")
     app.run_polling()
