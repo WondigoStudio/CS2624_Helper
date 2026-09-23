@@ -31,6 +31,7 @@ Reminders:
 Storage: a local SQLite file (homework.db) - one file, no external DB needed.
 """
 
+import asyncio
 import calendar
 import html
 import logging
@@ -47,6 +48,11 @@ try:
     import psycopg2.extras
 except ImportError:
     psycopg2 = None
+
+try:
+    import requests
+except ImportError:
+    requests = None
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -104,6 +110,16 @@ SCHEDULE_HOUR = 23
 SCHEDULE_MINUTE = 00
 
 ADMIN_IDS = {1762280778}
+
+# Voice/audio/video transcription (via Groq's free Whisper API). Get a free
+# key (no card needed) at https://console.groq.com -> API Keys, then set it
+# as the GROQ_API_KEY environment variable. Any voice message, audio file,
+# video note or video sent to the bot is auto-transcribed and replied to —
+# the actual speech-to-text work happens on Groq's servers, so this needs
+# almost no CPU/RAM locally, which matters on Render's free tier.
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+GROQ_WHISPER_MODEL = "whisper-large-v3"
+TRANSCRIBE_ENABLED = bool(GROQ_API_KEY)
 
 # Every homework task is shared: everyone who talks to the bot sees the same
 # list, regardless of who added it. Internally this is done by always
@@ -602,7 +618,7 @@ def parse_due_time(text: str):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
-    await update.message.reply_text(
+    text = (
         "Привет! Я помогу не забывать про домашние задания.\n\n"
         "⚠️ Список домашних заданий — общий для всех, кто пишет этому боту: "
         "если кто-то добавит задание, его увидят все, и наоборот.\n\n"
@@ -641,6 +657,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "кабинетов, если они сохранены.\n"
         f"Плюс за {LESSON_REMINDER_MINUTES} минут до каждой пары пришлю короткое напоминание."
     )
+    if TRANSCRIBE_ENABLED:
+        text += (
+            "\n\n🎙 Ещё умею: пришли голосовое, аудио, кружок или видео — расшифрую "
+            "речь в текст автоматически, без команд."
+        )
+    await update.message.reply_text(text)
 
 
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1865,6 +1887,65 @@ async def send_morning_schedule(context: ContextTypes.DEFAULT_TYPE):
             logger.warning("Could not send morning schedule to chat %s: %s", chat_id, e)
 
 
+# ---------------------------------------------------------------------------
+# Voice/audio/video transcription (Groq's free Whisper API)
+# ---------------------------------------------------------------------------
+
+def _transcribe_with_groq(audio_bytes: bytes, filename: str) -> str:
+    """Blocking HTTP call — always run this via asyncio.to_thread so it
+    doesn't stall the bot's event loop while waiting on the network."""
+    resp = requests.post(
+        "https://api.groq.com/openai/v1/audio/transcriptions",
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+        files={"file": (filename, bytes(audio_bytes))},
+        data={"model": GROQ_WHISPER_MODEL, "response_format": "json"},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json().get("text", "").strip()
+
+
+async def handle_transcribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    media = msg.voice or msg.audio or msg.video_note or msg.video
+    if media is None:
+        return
+
+    # Telegram's own size cap for bots downloading files is 20 MB; Groq's
+    # free tier also caps around 25 MB — bail out early with a clear reason
+    # instead of a confusing failure partway through.
+    if media.file_size and media.file_size > 20 * 1024 * 1024:
+        await msg.reply_text("Это сообщение слишком большое, чтобы распознать (лимит ~20 МБ).")
+        return
+
+    status = await msg.reply_text("🎙 Распознаю речь…")
+    try:
+        tg_file = await context.bot.get_file(media.file_id)
+        audio_bytes = await tg_file.download_as_bytearray()
+
+        if msg.voice:
+            filename = "voice.ogg"
+        elif msg.video_note:
+            filename = "video_note.mp4"
+        elif msg.video:
+            filename = "video.mp4"
+        else:
+            filename = getattr(media, "file_name", None) or "audio.mp3"
+
+        text = await asyncio.to_thread(_transcribe_with_groq, audio_bytes, filename)
+
+        if not text:
+            await status.edit_text("Не удалось разобрать речь — похоже, там тишина или шум.")
+            return
+        await status.edit_text(f"🗣 Транскрипция:\n{text}")
+    except requests.exceptions.RequestException as e:
+        logger.warning("Groq transcription request failed: %s", e)
+        await status.edit_text("Не получилось распознать — сервис транскрипции сейчас недоступен.")
+    except Exception as e:
+        logger.warning("Transcription failed: %s", e)
+        await status.edit_text("Не получилось распознать это сообщение.")
+
+
 async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
     """Runs every minute: for each chat, finds any lesson today whose start
     time is exactly LESSON_REMINDER_MINUTES from now, and sends a heads-up.
@@ -2034,6 +2115,20 @@ def main():
     app.add_handler(CommandHandler("testphoto", testphoto_cmd))
     app.add_handler(CallbackQueryHandler(testphoto_chosen, pattern="^testph:"))
     app.add_handler(CommandHandler("testmorning", testmorning_cmd))
+
+    if TRANSCRIBE_ENABLED and requests is not None:
+        app.add_handler(
+            MessageHandler(
+                filters.VOICE | filters.AUDIO | filters.VIDEO_NOTE | filters.VIDEO,
+                handle_transcribe,
+            )
+        )
+        logger.info("Voice/audio/video transcription enabled (Groq).")
+    elif GROQ_API_KEY and requests is None:
+        logger.warning(
+            "GROQ_API_KEY is set but the 'requests' package isn't installed — "
+            "transcription is disabled. Run: pip install -r requirements.txt"
+        )
 
     app.job_queue.run_daily(
         send_daily_reminders,
