@@ -1828,9 +1828,27 @@ async def calendar_day_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for r in rows:
             mark = "✅" if r["done"] else "▫️"
             time_part = f" ({r['due_time']})" if r["due_time"] else ""
-            lines.append(f"{mark} [{SUBJECT_NAME[r['subject']]}] {r['title']}{time_part}")
+            attach_part = " 📎" if r["attachment_file_id"] else ""
+            lines.append(f"{mark} [{SUBJECT_NAME[r['subject']]}] {r['title']}{time_part}{attach_part}")
         text = "\n".join(lines)
     await query.answer(text=text, show_alert=True)
+
+    # if any task on this day has an attachment, follow up with buttons to
+    # open each one directly — the popup alert itself can't carry buttons
+    # or send files, so this is a normal message underneath the calendar
+    attached = [r for r in rows if r["attachment_file_id"]]
+    if attached:
+        buttons = [
+            [InlineKeyboardButton(
+                f"📎 {SUBJECT_NAME[r['subject']]}: {r['title'][:35]}",
+                callback_data=f"taskfile:{r['id']}",
+            )]
+            for r in attached
+        ]
+        await query.message.reply_text(
+            f"Вложения на {d.strftime('%d.%m.%Y')}:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
 
 
 async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
