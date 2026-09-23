@@ -54,7 +54,13 @@ try:
 except ImportError:
     requests = None
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+)
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -63,6 +69,7 @@ from telegram.ext import (
     MessageHandler,
     ConversationHandler,
     ContextTypes,
+    InlineQueryHandler,
     filters,
 )
 
@@ -672,7 +679,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if TRANSLATE_ENABLED:
         text += (
             f"\n🌐 И перевожу: ответь на любое сообщение (реплаем) и упомяни меня "
-            f"через @{context.bot.username} в тексте ответа — переведу его на русский."
+            f"через @{context.bot.username} в тексте ответа — переведу его на русский.\n"
+            f"А ещё можно вызвать меня где угодно, даже там, где меня нет в чате — "
+            f"просто напиши @{context.bot.username} и текст в любом окне ввода Telegram."
         )
     await update.message.reply_text(text)
 
@@ -2056,6 +2065,72 @@ async def handle_translate_reply(update: Update, context: ContextTypes.DEFAULT_T
         await status.edit_text("Не получилось перевести это сообщение.")
 
 
+# --- Inline mode: @botusername <text> works in ANY chat, even ones the bot
+# isn't a member of (private DMs between two other people, other groups) ---
+
+# Tracks the most recent inline query id per user, so that if they keep
+# typing, only the latest keystroke actually triggers a Groq call — avoids
+# hammering the API (and its rate limit) once per character.
+_latest_inline_query_id: dict = {}
+
+
+async def inline_translate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.inline_query
+    text = query.query.strip()
+    user_id = update.effective_user.id if update.effective_user else 0
+
+    if not text:
+        await query.answer(
+            [
+                InlineQueryResultArticle(
+                    id="hint",
+                    title="Напиши текст для перевода на русский",
+                    description="Например: @имя_бота Hello, how are you?",
+                    input_message_content=InputTextMessageContent(
+                        "Напиши что-нибудь после имени бота, чтобы перевести на русский."
+                    ),
+                )
+            ],
+            cache_time=1,
+            is_personal=True,
+        )
+        return
+
+    # debounce: wait a beat, then bail out if a newer keystroke already
+    # superseded this query (Telegram fires a new inline_query on every
+    # pause in typing, not just when the person is "done")
+    _latest_inline_query_id[user_id] = query.id
+    await asyncio.sleep(0.6)
+    if _latest_inline_query_id.get(user_id) != query.id:
+        return
+
+    try:
+        translated = await asyncio.to_thread(_translate_with_groq, text)
+    except Exception as e:
+        logger.warning("Inline translation failed: %s", e)
+        translated = None
+
+    if not translated:
+        results = [
+            InlineQueryResultArticle(
+                id="error",
+                title="Не получилось перевести — попробуй ещё раз",
+                description=text[:80],
+                input_message_content=InputTextMessageContent(text),
+            )
+        ]
+    else:
+        results = [
+            InlineQueryResultArticle(
+                id="translation",
+                title="🌐 Отправить перевод",
+                description=translated[:100],
+                input_message_content=InputTextMessageContent(translated),
+            )
+        ]
+    await query.answer(results, cache_time=1, is_personal=True)
+
+
 async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
     """Runs every minute: for each chat, finds any lesson today whose start
     time is exactly LESSON_REMINDER_MINUTES from now, and sends a heads-up.
@@ -2248,7 +2323,8 @@ def main():
                 handle_translate_reply,
             )
         )
-        logger.info("Reply-to-translate enabled (Groq).")
+        app.add_handler(InlineQueryHandler(inline_translate))
+        logger.info("Reply-to-translate and inline translation enabled (Groq).")
 
     app.job_queue.run_daily(
         send_daily_reminders,
