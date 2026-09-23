@@ -106,8 +106,8 @@ TIMEZONE = ZoneInfo("Asia/Almaty")
 REMINDER_HOUR = 8
 REMINDER_MINUTE = 0
 
-SCHEDULE_HOUR = 7
-SCHEDULE_MINUTE = 30
+SCHEDULE_HOUR = 23
+SCHEDULE_MINUTE = 00
 
 ADMIN_IDS = {1762280778}
 
@@ -120,6 +120,13 @@ ADMIN_IDS = {1762280778}
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 GROQ_WHISPER_MODEL = "whisper-large-v3"
 TRANSCRIBE_ENABLED = bool(GROQ_API_KEY)
+
+# Translation: reply to any message and mention the bot (@botusername) in
+# your reply — the bot translates the original message into Russian.
+# Reuses the same GROQ_API_KEY as transcription, via Groq's free chat
+# models (no separate setup needed).
+GROQ_TRANSLATE_MODEL = "llama-3.1-8b-instant"
+TRANSLATE_ENABLED = bool(GROQ_API_KEY)
 
 # Every homework task is shared: everyone who talks to the bot sees the same
 # list, regardless of who added it. Internally this is done by always
@@ -661,6 +668,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += (
             "\n\n🎙 Ещё умею: пришли голосовое, аудио, кружок или видео — расшифрую "
             "речь в текст автоматически, без команд."
+        )
+    if TRANSLATE_ENABLED:
+        text += (
+            f"\n🌐 И перевожу: ответь на любое сообщение (реплаем) и упомяни меня "
+            f"через @{context.bot.username} в тексте ответа — переведу его на русский."
         )
     await update.message.reply_text(text)
 
@@ -1979,6 +1991,71 @@ async def handle_transcribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status.edit_text("Не получилось распознать это сообщение.")
 
 
+# ---------------------------------------------------------------------------
+# Translation to Russian (reply + mention the bot) — Groq's free chat models
+# ---------------------------------------------------------------------------
+
+def _translate_with_groq(text: str) -> str:
+    """Blocking HTTP call — run via asyncio.to_thread. Uses a plain chat
+    completion (Groq's Whisper endpoint only transcribes, it doesn't
+    translate arbitrary already-written text)."""
+    resp = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+        json={
+            "model": GROQ_TRANSLATE_MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a translator. Translate the user's message into "
+                        "Russian, however many languages it mixes or whatever language "
+                        "it's already in. Output ONLY the translation itself — no "
+                        "quotes, no explanations, no language names, nothing else. "
+                        "If the text is already entirely in Russian, output it unchanged."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+            "temperature": 0.2,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+def _message_mentions_bot(update: Update, bot_username: str) -> bool:
+    msg = update.message
+    if not msg.text or not bot_username:
+        return False
+    return f"@{bot_username.lower()}" in msg.text.lower()
+
+
+async def handle_translate_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    original = msg.reply_to_message
+    if original is None or not _message_mentions_bot(update, context.bot.username):
+        return
+
+    source_text = original.text or original.caption
+    if not source_text:
+        await msg.reply_text("В этом сообщении нет текста для перевода.")
+        return
+
+    status = await msg.reply_text("🌐 Перевожу…")
+    try:
+        translated = await asyncio.to_thread(_translate_with_groq, source_text)
+        quoted = f"🌐 Перевод:\n<blockquote>{html.escape(translated)}</blockquote>"
+        await status.edit_text(quoted, parse_mode=ParseMode.HTML)
+    except requests.exceptions.RequestException as e:
+        logger.warning("Groq translation request failed: %s", e)
+        await status.edit_text("Не получилось перевести — сервис сейчас недоступен.")
+    except Exception as e:
+        logger.warning("Translation failed: %s", e)
+        await status.edit_text("Не получилось перевести это сообщение.")
+
+
 async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
     """Runs every minute: for each chat, finds any lesson today whose start
     time is exactly LESSON_REMINDER_MINUTES from now, and sends a heads-up.
@@ -2163,6 +2240,15 @@ def main():
             "GROQ_API_KEY is set but the 'requests' package isn't installed — "
             "transcription is disabled. Run: pip install -r requirements.txt"
         )
+
+    if TRANSLATE_ENABLED and requests is not None:
+        app.add_handler(
+            MessageHandler(
+                filters.TEXT & filters.REPLY & ~filters.COMMAND,
+                handle_translate_reply,
+            )
+        )
+        logger.info("Reply-to-translate enabled (Groq).")
 
     app.job_queue.run_daily(
         send_daily_reminders,
