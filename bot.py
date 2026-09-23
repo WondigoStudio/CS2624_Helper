@@ -125,7 +125,7 @@ TRANSCRIBE_ENABLED = bool(GROQ_API_KEY)
 # your reply — the bot translates the original message into Russian.
 # Reuses the same GROQ_API_KEY as transcription, via Groq's free chat
 # models (no separate setup needed).
-GROQ_TRANSLATE_MODEL = "llama-3.1-8b-instant"
+GROQ_TRANSLATE_MODEL = "openai/gpt-oss-20b"
 TRANSLATE_ENABLED = bool(GROQ_API_KEY)
 
 # Every homework task is shared: everyone who talks to the bot sees the same
