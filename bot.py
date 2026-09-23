@@ -100,8 +100,8 @@ TIMEZONE = ZoneInfo("Asia/Almaty")
 REMINDER_HOUR = 8
 REMINDER_MINUTE = 0
 
-SCHEDULE_HOUR = 7
-SCHEDULE_MINUTE = 30
+SCHEDULE_HOUR = 23
+SCHEDULE_MINUTE = 00
 
 ADMIN_IDS = {1762280778}
 
@@ -140,6 +140,12 @@ SUBJECT_EMOJI = {
 CHOOSING_SUBJECT, TYPING_TITLE, TYPING_DATE, TYPING_TIME = range(4)
 CHOOSING_TARGET_USER, SCH_WEEKDAY, SCH_SUBJECT, SCH_TIME, SCH_ROOM = range(4, 9)
 PHOTO_TARGET_USER, PHOTO_ROOM_NAME, PHOTO_WAITING = range(9, 12)
+
+# Conversation states for /edittask (edit an existing homework task)
+EDIT_TASK_PICK, EDIT_TASK_FIELD, EDIT_TASK_SUBJECT, EDIT_TASK_TITLE, EDIT_TASK_DATE, EDIT_TASK_TIME = range(12, 18)
+
+# Conversation states for /editschedule (edit an existing timetable lesson)
+EDIT_LESSON_PICK, EDIT_LESSON_FIELD, EDIT_LESSON_WEEKDAY, EDIT_LESSON_SUBJECT, EDIT_LESSON_TIME, EDIT_LESSON_ROOM = range(18, 24)
 
 WEEKDAY_NAMES_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 WEEKDAY_NAMES_FULL_RU = [
@@ -359,6 +365,27 @@ def delete_task(task_id: int):
     conn.close()
 
 
+# whitelisted so it's always a fixed, known column name — never built from
+# unsanitized user input, even though it's f-string-interpolated below
+_TASK_EDITABLE_FIELDS = {"subject", "title", "due_date", "due_time"}
+
+
+def update_task_field(task_id: int, field: str, value):
+    if field not in _TASK_EDITABLE_FIELDS:
+        raise ValueError(f"Not an editable task field: {field}")
+    conn = db()
+    conn.execute(f"UPDATE tasks SET {field} = ? WHERE id = ?", (value, task_id))
+    conn.commit()
+    conn.close()
+
+
+def get_task(task_id: int):
+    conn = db()
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    conn.close()
+    return row
+
+
 def get_task_dates_in_month(chat_id: int, year: int, month: int):
     start = date(year, month, 1).isoformat()
     last_day = calendar.monthrange(year, month)[1]
@@ -425,6 +452,25 @@ def delete_lesson(lesson_id: int):
     conn.execute("DELETE FROM schedule WHERE id = ?", (lesson_id,))
     conn.commit()
     conn.close()
+
+
+_LESSON_EDITABLE_FIELDS = {"weekday", "subject", "time", "room"}
+
+
+def update_lesson_field(lesson_id: int, field: str, value):
+    if field not in _LESSON_EDITABLE_FIELDS:
+        raise ValueError(f"Not an editable lesson field: {field}")
+    conn = db()
+    conn.execute(f"UPDATE schedule SET {field} = ? WHERE id = ?", (value, lesson_id))
+    conn.commit()
+    conn.close()
+
+
+def get_lesson(lesson_id: int):
+    conn = db()
+    row = conn.execute("SELECT * FROM schedule WHERE id = ?", (lesson_id,)).fetchone()
+    conn.close()
+    return row
 
 
 def set_room_photo(chat_id: int, room: str, file_id: str, kind: str = "photo"):
@@ -533,6 +579,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/all — все предстоящие задания\n"
         "/done — отметить задание выполненным\n"
         "/delete — удалить задание\n"
+        "/edittask — изменить задание (предмет/текст/дату/время)\n"
         "/calendar — календарь месяца кнопками: зелёная — свободный день, "
         "красная — есть задание, синяя — сегодня. Нажми на день — покажу "
         "что на него задано\n\n"
@@ -542,6 +589,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/schedule_week — расписание на всю неделю\n"
         "/schedule_day — расписание на выбранный день недели + фото кабинетов\n"
         "/schedule_delete — удалить пару из расписания\n"
+        "/editschedule — изменить пару (день/предмет/время/кабинет)\n"
         "/addroomphoto — прикрепить фото (карту/фото) к кабинету\n"
         "/roomphotos — список кабинетов с сохранённым фото\n"
         "/testphoto — сразу прислать сохранённое фото кабинета (проверить, что оно сохранилось)\n"
@@ -737,6 +785,131 @@ async def delete_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task_id = int(query.data.split(":")[1])
     delete_task(task_id)
     await query.edit_message_text("Удалено 🗑")
+
+
+# --- /edittask: change subject, title, date or time of an existing task ---
+
+async def edittask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    rows = get_tasks(SHARED_TASKS_ID, only_undone=False)
+    if not rows:
+        await update.message.reply_text("Список заданий пуст.")
+        return ConversationHandler.END
+    buttons = [
+        [InlineKeyboardButton(
+            f"{SUBJECT_NAME[r['subject']]}: {r['title'][:35]}",
+            callback_data=f"edittask:{r['id']}",
+        )]
+        for r in rows
+    ]
+    await update.message.reply_text(
+        "Какое задание изменить?", reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return EDIT_TASK_PICK
+
+
+def _edit_task_field_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Предмет", callback_data="editfield:subject")],
+        [InlineKeyboardButton("Текст задания", callback_data="editfield:title")],
+        [InlineKeyboardButton("Дата", callback_data="editfield:due_date")],
+        [InlineKeyboardButton("Время", callback_data="editfield:due_time")],
+    ])
+
+
+async def edittask_picked(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    task_id = int(query.data.split(":")[1])
+    context.user_data["edit_task_id"] = task_id
+    await query.edit_message_text(
+        "Что изменить в этом задании?", reply_markup=_edit_task_field_keyboard()
+    )
+    return EDIT_TASK_FIELD
+
+
+async def edittask_field_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    field = query.data.split(":", 1)[1]
+
+    if field == "subject":
+        await query.edit_message_text("Выбери новый предмет:")
+        await query.message.reply_text("Предмет:", reply_markup=subject_keyboard("edittasksub"))
+        return EDIT_TASK_SUBJECT
+    if field == "title":
+        await query.edit_message_text("Напиши новый текст задания:")
+        return EDIT_TASK_TITLE
+    if field == "due_date":
+        await query.edit_message_text(
+            "Напиши новую дату в формате ДД.ММ или ДД.ММ.ГГГГ, либо «сегодня»/«завтра»:"
+        )
+        return EDIT_TASK_DATE
+    if field == "due_time":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Без точного времени", callback_data="edittasktime:none")]
+        ])
+        await query.edit_message_text(
+            "Напиши новое время в формате ЧЧ:ММ, или нажми кнопку, чтобы убрать время:",
+            reply_markup=keyboard,
+        )
+        return EDIT_TASK_TIME
+
+
+async def edittask_subject_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    subject = query.data.split(":")[1]
+    task_id = context.user_data.pop("edit_task_id")
+    update_task_field(task_id, "subject", subject)
+    await query.edit_message_text(f"Готово ✅ Предмет изменён на «{SUBJECT_NAME[subject]}».")
+    return ConversationHandler.END
+
+
+async def edittask_title_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    task_id = context.user_data.pop("edit_task_id")
+    new_title = update.message.text.strip()
+    update_task_field(task_id, "title", new_title)
+    await update.message.reply_text(f"Готово ✅ Текст задания изменён на «{new_title}».")
+    return ConversationHandler.END
+
+
+async def edittask_date_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    d = parse_due_date(update.message.text)
+    if d is None:
+        await update.message.reply_text(
+            "Не понял дату. Попробуй ещё раз, например: 05.10 или 05.10.2026"
+        )
+        return EDIT_TASK_DATE
+    task_id = context.user_data.pop("edit_task_id")
+    update_task_field(task_id, "due_date", d.isoformat())
+    await update.message.reply_text(f"Готово ✅ Дата изменена на {d.strftime('%d.%m.%Y')}.")
+    return ConversationHandler.END
+
+
+async def edittask_time_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = parse_due_time(update.message.text)
+    if t is None:
+        await update.message.reply_text(
+            "Не понял время. Напиши в формате ЧЧ:ММ (например 09:00), "
+            "или «нет», чтобы убрать время."
+        )
+        return EDIT_TASK_TIME
+    task_id = context.user_data.pop("edit_task_id")
+    update_task_field(task_id, "due_time", t or None)
+    await update.message.reply_text(
+        f"Готово ✅ Время изменено на {t}." if t else "Готово ✅ Время убрано."
+    )
+    return ConversationHandler.END
+
+
+async def edittask_time_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    task_id = context.user_data.pop("edit_task_id")
+    update_task_field(task_id, "due_time", None)
+    await query.edit_message_text("Готово ✅ Время убрано.")
+    return ConversationHandler.END
 
 
 def weekday_keyboard(prefix: str):
@@ -941,6 +1114,109 @@ async def schedule_delete_chosen(update: Update, context: ContextTypes.DEFAULT_T
     lesson_id = int(query.data.split(":")[1])
     delete_lesson(lesson_id)
     await query.edit_message_text("Удалено 🗑")
+
+
+# --- /editschedule: change weekday, subject, time or room of a lesson -----
+
+async def editschedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    rows = get_lessons(update.effective_chat.id)
+    if not rows:
+        await update.message.reply_text("Расписание пустое. Добавь пару через /schedule_add.")
+        return ConversationHandler.END
+    buttons = [
+        [InlineKeyboardButton(
+            f"{WEEKDAY_NAMES_RU[r['weekday']]} {r['time']} {SUBJECT_NAME[r['subject']]}",
+            callback_data=f"editlesson:{r['id']}",
+        )]
+        for r in rows
+    ]
+    await update.message.reply_text(
+        "Какую пару изменить?", reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return EDIT_LESSON_PICK
+
+
+def _edit_lesson_field_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("День недели", callback_data="editlfield:weekday")],
+        [InlineKeyboardButton("Предмет", callback_data="editlfield:subject")],
+        [InlineKeyboardButton("Время", callback_data="editlfield:time")],
+        [InlineKeyboardButton("Кабинет", callback_data="editlfield:room")],
+    ])
+
+
+async def editschedule_picked(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    lesson_id = int(query.data.split(":")[1])
+    context.user_data["edit_lesson_id"] = lesson_id
+    await query.edit_message_text(
+        "Что изменить в этой паре?", reply_markup=_edit_lesson_field_keyboard()
+    )
+    return EDIT_LESSON_FIELD
+
+
+async def editschedule_field_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    field = query.data.split(":", 1)[1]
+
+    if field == "weekday":
+        await query.edit_message_text("Выбери новый день недели:")
+        await query.message.reply_text("День недели:", reply_markup=weekday_keyboard("editlwd"))
+        return EDIT_LESSON_WEEKDAY
+    if field == "subject":
+        await query.edit_message_text("Выбери новый предмет:")
+        await query.message.reply_text("Предмет:", reply_markup=subject_keyboard("editlsub"))
+        return EDIT_LESSON_SUBJECT
+    if field == "time":
+        await query.edit_message_text("Напиши новое время начала в формате ЧЧ:ММ:")
+        return EDIT_LESSON_TIME
+    if field == "room":
+        await query.edit_message_text("Напиши новый номер/название кабинета:")
+        return EDIT_LESSON_ROOM
+
+
+async def editschedule_weekday_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    weekday = int(query.data.split(":")[1])
+    lesson_id = context.user_data.pop("edit_lesson_id")
+    update_lesson_field(lesson_id, "weekday", weekday)
+    await query.edit_message_text(f"Готово ✅ День изменён на {WEEKDAY_NAMES_FULL_RU[weekday]}.")
+    return ConversationHandler.END
+
+
+async def editschedule_subject_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    subject = query.data.split(":")[1]
+    lesson_id = context.user_data.pop("edit_lesson_id")
+    update_lesson_field(lesson_id, "subject", subject)
+    await query.edit_message_text(f"Готово ✅ Предмет изменён на «{SUBJECT_NAME[subject]}».")
+    return ConversationHandler.END
+
+
+async def editschedule_time_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = parse_due_time(update.message.text)
+    if not t:  # time is required for a lesson — "" (skip word) and None both invalid
+        await update.message.reply_text(
+            "Не понял время. Напиши в формате ЧЧ:ММ, например 09:00."
+        )
+        return EDIT_LESSON_TIME
+    lesson_id = context.user_data.pop("edit_lesson_id")
+    update_lesson_field(lesson_id, "time", t)
+    await update.message.reply_text(f"Готово ✅ Время изменено на {t}.")
+    return ConversationHandler.END
+
+
+async def editschedule_room_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    room = update.message.text.strip()
+    lesson_id = context.user_data.pop("edit_lesson_id")
+    update_lesson_field(lesson_id, "room", room)
+    await update.message.reply_text(f"Готово ✅ Кабинет изменён на «{room}».")
+    return ConversationHandler.END
 
 
 async def schedule_day_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1419,10 +1695,41 @@ def main():
         fallbacks=[CommandHandler("cancel", schedule_cancel)],
     )
 
+    edittask_conv = ConversationHandler(
+        entry_points=[CommandHandler("edittask", edittask_start)],
+        states={
+            EDIT_TASK_PICK: [CallbackQueryHandler(edittask_picked, pattern="^edittask:")],
+            EDIT_TASK_FIELD: [CallbackQueryHandler(edittask_field_chosen, pattern="^editfield:")],
+            EDIT_TASK_SUBJECT: [CallbackQueryHandler(edittask_subject_chosen, pattern="^edittasksub:")],
+            EDIT_TASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_title_typed)],
+            EDIT_TASK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_date_typed)],
+            EDIT_TASK_TIME: [
+                CallbackQueryHandler(edittask_time_skip, pattern="^edittasktime:none$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_time_typed),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", add_cancel)],
+    )
+
+    editschedule_conv = ConversationHandler(
+        entry_points=[CommandHandler("editschedule", editschedule_start)],
+        states={
+            EDIT_LESSON_PICK: [CallbackQueryHandler(editschedule_picked, pattern="^editlesson:")],
+            EDIT_LESSON_FIELD: [CallbackQueryHandler(editschedule_field_chosen, pattern="^editlfield:")],
+            EDIT_LESSON_WEEKDAY: [CallbackQueryHandler(editschedule_weekday_chosen, pattern="^editlwd:")],
+            EDIT_LESSON_SUBJECT: [CallbackQueryHandler(editschedule_subject_chosen, pattern="^editlsub:")],
+            EDIT_LESSON_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, editschedule_time_typed)],
+            EDIT_LESSON_ROOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, editschedule_room_typed)],
+        },
+        fallbacks=[CommandHandler("cancel", schedule_cancel)],
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(add_conv)
     app.add_handler(schedule_add_conv)
     app.add_handler(addroomphoto_conv)
+    app.add_handler(edittask_conv)
+    app.add_handler(editschedule_conv)
     app.add_handler(CommandHandler("today", today_cmd))
     app.add_handler(CommandHandler("week", week_cmd))
     app.add_handler(CommandHandler("all", all_cmd))
