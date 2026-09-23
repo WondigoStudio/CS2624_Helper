@@ -1937,7 +1937,8 @@ async def handle_transcribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not text:
             await status.edit_text("Не удалось разобрать речь — похоже, там тишина или шум.")
             return
-        await status.edit_text(f"🗣 Транскрипция:\n{text}")
+        quoted = f"🗣 Транскрипция:\n<blockquote>{html.escape(text)}</blockquote>"
+        await status.edit_text(quoted, parse_mode=ParseMode.HTML)
     except requests.exceptions.RequestException as e:
         logger.warning("Groq transcription request failed: %s", e)
         await status.edit_text("Не получилось распознать — сервис транскрипции сейчас недоступен.")
