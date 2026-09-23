@@ -1829,26 +1829,40 @@ async def calendar_day_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mark = "✅" if r["done"] else "▫️"
             time_part = f" ({r['due_time']})" if r["due_time"] else ""
             attach_part = " 📎" if r["attachment_file_id"] else ""
-            lines.append(f"{mark} [{SUBJECT_NAME[r['subject']]}] {r['title']}{time_part}{attach_part}")
+            desc_part = " 📝" if r["description"] else ""
+            lines.append(f"{mark} [{SUBJECT_NAME[r['subject']]}] {r['title']}{time_part}{attach_part}{desc_part}")
         text = "\n".join(lines)
     await query.answer(text=text, show_alert=True)
 
-    # if any task on this day has an attachment, follow up with buttons to
-    # open each one directly — the popup alert itself can't carry buttons
-    # or send files, so this is a normal message underneath the calendar
-    attached = [r for r in rows if r["attachment_file_id"]]
-    if attached:
-        buttons = [
-            [InlineKeyboardButton(
-                f"📎 {SUBJECT_NAME[r['subject']]}: {r['title'][:35]}",
-                callback_data=f"taskfile:{r['id']}",
-            )]
-            for r in attached
-        ]
+    # buttons underneath to see the full description or open an attachment —
+    # the popup alert itself can't carry buttons, send files, or fit a long
+    # description (it's capped around 200 characters by Telegram)
+    with_extras = [r for r in rows if r["attachment_file_id"] or r["description"]]
+    if with_extras:
+        buttons = []
+        for r in with_extras:
+            label = f"{SUBJECT_NAME[r['subject']]}: {r['title'][:30]}"
+            if r["description"]:
+                buttons.append([InlineKeyboardButton(f"📝 {label}", callback_data=f"taskdesc:{r['id']}")])
+            if r["attachment_file_id"]:
+                buttons.append([InlineKeyboardButton(f"📎 {label}", callback_data=f"taskfile:{r['id']}")])
         await query.message.reply_text(
-            f"Вложения на {d.strftime('%d.%m.%Y')}:",
+            f"Подробнее про задания на {d.strftime('%d.%m.%Y')}:",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
+
+
+async def taskdesc_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    task_id = int(query.data.split(":")[1])
+    task = get_task(task_id)
+    if not task or not task["description"]:
+        await query.message.reply_text("Описания нет.")
+        return
+    await query.message.reply_text(
+        f"📝 [{SUBJECT_NAME[task['subject']]}] {task['title']}:\n\n{task['description']}"
+    )
 
 
 async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
@@ -2117,6 +2131,7 @@ def main():
     app.add_handler(CallbackQueryHandler(delete_chosen, pattern="^del:"))
     app.add_handler(CommandHandler("taskfile", taskfile_cmd))
     app.add_handler(CallbackQueryHandler(taskfile_chosen, pattern="^taskfile:"))
+    app.add_handler(CallbackQueryHandler(taskdesc_chosen, pattern="^taskdesc:"))
     app.add_handler(CommandHandler("calendar", calendar_cmd))
     app.add_handler(CallbackQueryHandler(calendar_nav, pattern="^cal:"))
     app.add_handler(CallbackQueryHandler(calendar_day_tap, pattern="^day:"))
