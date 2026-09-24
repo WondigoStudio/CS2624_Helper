@@ -2171,37 +2171,49 @@ async def handle_action_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
         update.effective_chat.id, update.effective_user.id, target_user.id, action
     )
     tail = f" (уже {count}-й раз!)" if count > 1 else ""
-    await msg.reply_text(f"{emoji} {phrase}{tail}", parse_mode=ParseMode.HTML)
+    
+    # Формируем единый текст: эмодзи в начале + пробел + текст сценки
+    full_text = f"{emoji} {phrase}{tail}"
 
-    # sent as its OWN message with nothing else in it — Telegram clients
-    # play a full-screen animation when you tap a message that's only a
-    # single "animatable" emoji (❤️🔥🎉😂👊 etc.); this doesn't work when
-    # the emoji is mixed into a longer sentence, only standalone.
-    # If a premium custom emoji id is configured for this action, use that
-    # instead — falls back to the plain emoji if sending it fails (e.g. the
-    # bot's owner account doesn't have Telegram Premium). 
+    # Считаем длину самого эмодзи в UTF-16 для Telegram API
+    utf16_emoji_length = len(emoji.encode('utf-16-le')) // 2
+
+    # Базовые сущности (ссылки на пользователей из mention_html)
+    # Так как мы добавили эмодзи и пробел в начало, нам нужно сдвинуть 
+    # смещение (offset) всех HTML-ссылок на длину эмодзи + 1 символ пробела
+    shifted_entities = []
+    
+    # Временно генерируем сущности из HTML, чтобы узнать их расположение
+    temp_msg = await context.bot.send_message(
+        chat_id=SHARED_TASKS_ID, 
+        text=f"{phrase}{tail}", 
+        parse_mode=ParseMode.HTML
+    )
+    base_entities = temp_msg.entities or []
+    await context.bot.delete_message(chat_id=SHARED_TASKS_ID, message_id=temp_msg.message_id)
+
+    for ent in base_entities:
+        ent.offset += utf16_emoji_length + 1
+        shifted_entities.append(ent)
+
+    # Если для действия задан премиум-эмодзи, добавляем его сущность в начало
     custom_id = CUSTOM_EMOJI_IDS.get(action)
     if custom_id:
-        try:
-            from telegram import MessageEntity
-            
-            # Вычисляем правильную длину в UTF-16 для Telegram API
-            utf16_length = len(emoji.encode('utf-16-le')) // 2
-            
-            await msg.reply_text(
-                text=emoji,
-                entities=[
-                    MessageEntity(
-                        type=MessageEntity.CUSTOM_EMOJI,
-                        offset=0,
-                        length=utf16_length,
-                        custom_emoji_id=str(custom_id)
-                    )
-                ]
-            )
-            return
-        except Exception as e:
-            logger.warning("Could not send custom emoji for '%s': %s", action, e)
+        from telegram import MessageEntity
+        premium_entity = MessageEntity(
+            type=MessageEntity.CUSTOM_EMOJI,
+            offset=0,
+            length=utf16_emoji_length,
+            custom_emoji_id=str(custom_id)
+        )
+        shifted_entities.insert(0, premium_entity)
+
+    # Отправляем всё одним сообщением
+    await msg.reply_text(
+        text=full_text,
+        entities=shifted_entities
+    )
+
 
 
 
@@ -2236,36 +2248,7 @@ async def handle_translate_reply(update: Update, context: ContextTypes.DEFAULT_T
         logger.warning("Translation failed: %s", e)
         await status.edit_text("Не получилось перевести это сообщение.")
 
-
-async def emojiid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin-only helper: send this command, then send a message containing
-    a custom/premium emoji — the bot replies with its custom_emoji_id, so
-    you can paste it into CUSTOM_EMOJI_IDS in the code."""
-    register_chat(update)
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Эта команда доступна только администраторам бота.")
-        return
-    await update.message.reply_text(
-        "Пришли сообщение с premium-эмодзи (можно вместе с другим текстом) — "
-        "отвечу его custom_emoji_id."
-    )
-
-
-async def emojiid_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Passive listener: whenever an admin's message contains a custom
-    emoji entity, report its id. Doesn't interfere with anything else since
-    it only replies when that entity type is actually present."""
-    if not update.effective_user or not is_admin(update.effective_user.id):
-        return
-    entities = update.message.entities or []
-    custom = [e for e in entities if e.type == "custom_emoji"]
-    if not custom:
-        return
-    lines = ["Custom emoji ID:"]
-    for e in custom:
-        piece = update.message.text[e.offset: e.offset + e.length]
-        lines.append(f"{piece} → <code>{e.custom_emoji_id}</code>")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+ 
 
 
 async def topactions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2547,8 +2530,7 @@ def main():
         )
     )
     app.add_handler(CommandHandler("topactions", topactions_cmd))
-    app.add_handler(CommandHandler("emojiid", emojiid_cmd))
-    app.add_handler(MessageHandler(filters.Entity("custom_emoji"), emojiid_capture))
+     
     logger.info("Fun reply-actions enabled (%d actions).", len(ACTIONS))
 
     if TRANSLATE_ENABLED and requests is not None:
