@@ -114,8 +114,8 @@ TIMEZONE = ZoneInfo("Asia/Almaty")
 REMINDER_HOUR = 8
 REMINDER_MINUTE = 0
 
-SCHEDULE_HOUR = 23
-SCHEDULE_MINUTE = 00
+SCHEDULE_HOUR = 7
+SCHEDULE_MINUTE = 30
 
 ADMIN_IDS = {1762280778}
 
@@ -2185,14 +2185,16 @@ async def handle_action_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
         try:
             from telegram import MessageEntity
             
-            # Отправляем чистый текст эмодзи, но вешаем на него разметку кастомного эмодзи
+            # Вычисляем правильную длину в UTF-16 для Telegram API
+            utf16_length = len(emoji.encode('utf-16-le')) // 2
+            
             await msg.reply_text(
                 text=emoji,
                 entities=[
                     MessageEntity(
                         type=MessageEntity.CUSTOM_EMOJI,
                         offset=0,
-                        length=len(emoji),
+                        length=utf16_length,
                         custom_emoji_id=str(custom_id)
                     )
                 ]
@@ -2200,6 +2202,7 @@ async def handle_action_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         except Exception as e:
             logger.warning("Could not send custom emoji for '%s': %s", action, e)
+
 
 
 async def handle_translate_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
