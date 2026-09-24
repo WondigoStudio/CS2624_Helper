@@ -2163,55 +2163,79 @@ async def handle_action_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     emoji, phrases = ACTIONS[action]
-    actor_link = mention_html(update.effective_user)
-    target_link = mention_html(target_user)
-    phrase = random.choice(phrases).format(a=actor_link, t=target_link)
-
+    
+    # Чтобы правильно рассчитать смещения ссылок, формируем имена до сборки HTML-строки
+    actor_name = short_name(update.effective_user)
+    target_name = short_name(target_user)
+    
+    # Берем случайную фразу и подставляем чистые имена (без HTML-тегов)
+    raw_phrase = random.choice(phrases).format(a=actor_name, t=target_name)
+    
     count = log_action_and_count(
         update.effective_chat.id, update.effective_user.id, target_user.id, action
     )
     tail = f" (уже {count}-й раз!)" if count > 1 else ""
     
-    # Формируем единый текст: эмодзи в начале + пробел + текст сценки
-    full_text = f"{emoji} {phrase}{tail}"
+    # Собираем чистый текст без тегов, который увидит пользователь
+    # Формат: "Эмодзи[пробел]Фраза[хвост с количеством]"
+    full_text = f"{emoji} {raw_phrase}{tail}"
 
-    # Считаем длину самого эмодзи в UTF-16 для Telegram API
+    # Считаем длину смайлика и пробела в UTF-16 (для Telegram API)
     utf16_emoji_length = len(emoji.encode('utf-16-le')) // 2
+    utf16_prefix_offset = utf16_emoji_length + 1  # учитываем пробел после эмодзи
 
-    # Базовые сущности (ссылки на пользователей из mention_html)
-    # Так как мы добавили эмодзи и пробел в начало, нам нужно сдвинуть 
-    # смещение (offset) всех HTML-ссылок на длину эмодзи + 1 символ пробела
-    shifted_entities = []
-    
-    # Временно генерируем сущности из HTML, чтобы узнать их расположение
-    temp_msg = await context.bot.send_message(
-        chat_id=SHARED_TASKS_ID, 
-        text=f"{phrase}{tail}", 
-        parse_mode=ParseMode.HTML
-    )
-    base_entities = temp_msg.entities or []
-    await context.bot.delete_message(chat_id=SHARED_TASKS_ID, message_id=temp_msg.message_id)
+    from telegram import MessageEntity
 
-    for ent in base_entities:
-        ent.offset += utf16_emoji_length + 1
-        shifted_entities.append(ent)
+    # Массив для хранения сущностей (кастомного эмодзи и кликабельных имен)
+    entities = []
 
-    # Если для действия задан премиум-эмодзи, добавляем его сущность в начало
+    # 1. Если для действия задан премиум-эмодзи, добавляем его сущность на позицию 0
     custom_id = CUSTOM_EMOJI_IDS.get(action)
     if custom_id:
-        from telegram import MessageEntity
-        premium_entity = MessageEntity(
-            type=MessageEntity.CUSTOM_EMOJI,
-            offset=0,
-            length=utf16_emoji_length,
-            custom_emoji_id=str(custom_id)
+        entities.append(
+            MessageEntity(
+                type=MessageEntity.CUSTOM_EMOJI,
+                offset=0,
+                length=utf16_emoji_length,
+                custom_emoji_id=str(custom_id)
+            )
         )
-        shifted_entities.insert(0, premium_entity)
 
-    # Отправляем всё одним сообщением
+    # 2. Математически находим точные позиции имен внутри фразы для создания нативных ссылок
+    # Ищем, где во фразе начинается имя инициатора (actor)
+    actor_idx = raw_phrase.find(actor_name)
+    if actor_idx != -1:
+        # Переводим индекс начала в UTF-16 смещение
+        actor_offset = len(raw_phrase[:actor_idx].encode('utf-16-le')) // 2
+        actor_length = len(actor_name.encode('utf-16-le')) // 2
+        entities.append(
+            MessageEntity(
+                type=MessageEntity.TEXT_MENTION,
+                offset=utf16_prefix_offset + actor_offset,
+                length=actor_length,
+                user=update.effective_user
+            )
+        )
+
+    # Ищем, где во фразе начинается имя цели (target)
+    target_idx = raw_phrase.find(target_name)
+    if target_idx != -1:
+        # Переводим индекс начала в UTF-16 смещение
+        target_offset = len(raw_phrase[:target_idx].encode('utf-16-le')) // 2
+        target_length = len(target_name.encode('utf-16-le')) // 2
+        entities.append(
+            MessageEntity(
+                type=MessageEntity.TEXT_MENTION,
+                offset=utf16_prefix_offset + target_offset,
+                length=target_length,
+                user=target_user
+            )
+        )
+
+    # Отправляем сообщение: текст собран, сущности размечены, никаких скрытых отправлений в чат 0
     await msg.reply_text(
         text=full_text,
-        entities=shifted_entities
+        entities=entities
     )
 
 
