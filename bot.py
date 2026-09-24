@@ -2184,7 +2184,7 @@ async def handle_action_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
     if custom_id:
         try:
             await msg.reply_text(
-                f'<tg-emoji id="{custom_id}">{emoji}</tg-emoji>',
+                f'<tg-emoji custom_emoji_id="{custom_id}">{emoji}</tg-emoji>',
                 parse_mode=ParseMode.HTML,
             )
             return
