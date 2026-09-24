@@ -36,6 +36,7 @@ import calendar
 import html
 import logging
 import os
+import random
 import sqlite3
 import threading
 from datetime import datetime, date, time as dtime, timedelta
@@ -113,7 +114,7 @@ TIMEZONE = ZoneInfo("Asia/Almaty")
 REMINDER_HOUR = 8
 REMINDER_MINUTE = 0
 
-SCHEDULE_HOUR = 8
+SCHEDULE_HOUR = 7
 SCHEDULE_MINUTE = 30
 
 ADMIN_IDS = {1762280778}
@@ -165,6 +166,46 @@ SUBJECT_NAME = dict(SUBJECTS)
 SUBJECT_EMOJI = {
     "ict": "💻", "itp": "🖥", "psy": "🧠", "soc": "🧑‍🤝‍🧑",
     "dm": "🔢", "flb2": "🌍", "chn": "🇨🇳", "pe": "🏃",
+}
+
+# ---------------------------------------------------------------------------
+# Fun reply actions ("обнять", "ударить", etc.) — Iris-bot style. Reply to
+# someone's message with one of these words (no slash, just the plain word)
+# and the bot posts a little scene with both names. {a} = the person who
+# sent the action, {t} = the person being replied to.
+# ---------------------------------------------------------------------------
+
+ACTIONS = {
+    "обнять":        ("🤗", ["{a} крепко обнял(а) {t}"]),
+    "погладить":     ("🥰", ["{a} нежно погладил(а) {t} по голове"]),
+    "поцеловать":    ("😘", ["{a} поцеловал(а) {t}"]),
+    "ударить":       ("👊", ["{a} со всей силы ударил(а) {t}"]),
+    "пнуть":         ("🦵", ["{a} от души пнул(а) {t}"]),
+    "укусить":       ("😈", ["{a} укусил(а) {t}"]),
+    "ущипнуть":      ("🤏", ["{a} ущипнул(а) {t}"]),
+    "толкнуть":      ("🫸", ["{a} толкнул(а) {t}"]),
+    "шлёпнуть":      ("👋", ["{a} шлёпнул(а) {t}"]),
+    "дать пять":     ("✋", ["{a} дал(а) пять {t}"]),
+    "потрепать":     ("🖐", ["{a} потрепал(а) {t} по щеке"]),
+    "взъерошить":    ("💇", ["{a} взъерошил(а) волосы {t}"]),
+    "подмигнуть":    ("😉", ["{a} подмигнул(а) {t}"]),
+    "помахать":      ("👋", ["{a} помахал(а) {t}"]),
+    "потискать":     ("🫂", ["{a} затискал(а) {t}"]),
+    "защекотать":    ("🤣", ["{a} защекотал(а) {t} до слёз"]),
+    "взять за руку": ("🤝", ["{a} взял(а) {t} за руку"]),
+    "станцевать":    ("💃", ["{a} закружил(а) {t} в танце"]),
+    "подзатыльник":  ("🖐", ["{a} дал(а) подзатыльник {t}"]),
+    "оплеуха":       ("✋", ["{a} отвесил(а) оплеуху {t}"]),
+    "погрозить":     ("✊", ["{a} погрозил(а) кулаком {t}"]),
+    "показать язык": ("😛", ["{a} показал(а) язык {t}"]),
+    "комплимент":    ("💬", ["{a} сделал(а) комплимент {t}"]),
+    "признаться":    ("❤️", ["{a} признался(ась) в любви {t}"]),
+    "торт в лицо":   ("🎂", ["{a} кинул(а) тортом в лицо {t}"]),
+    "облить водой":  ("💦", ["{a} облил(а) водой {t}"]),
+    "напугать":      ("👻", ["{a} напугал(а) {t}"]),
+    "засмеять":      ("😂", ["{a} поднял(а) на смех {t}"]),
+    "извиниться":    ("🙏", ["{a} извинился(лась) перед {t}"]),
+    "поблагодарить": ("🙌", ["{a} поблагодарил(а) {t}"]),
 }
 
 CHOOSING_SUBJECT, TYPING_TITLE, TYPING_DATE, TYPING_TIME = range(4)
@@ -315,6 +356,18 @@ def init_db():
             file_id TEXT NOT NULL,
             kind TEXT NOT NULL DEFAULT 'photo',
             PRIMARY KEY (chat_id, room)
+        )
+        """
+    )
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS actions (
+            id {id_pk},
+            chat_id BIGINT NOT NULL,
+            actor_id BIGINT NOT NULL,
+            target_id BIGINT NOT NULL,
+            action TEXT NOT NULL,
+            created_at TEXT NOT NULL
         )
         """
     )
@@ -567,6 +620,39 @@ def list_room_photos(chat_id: int):
     return [r["room"] for r in rows]
 
 
+def log_action_and_count(chat_id: int, actor_id: int, target_id: int, action: str) -> int:
+    """Records one occurrence of a fun reply-action and returns how many
+    times this exact actor -> target -> action combo has now happened in
+    this chat (including this one)."""
+    conn = db()
+    conn.execute(
+        "INSERT INTO actions (chat_id, actor_id, target_id, action, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (chat_id, actor_id, target_id, action, now_kz().isoformat()),
+    )
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM actions WHERE chat_id = ? AND actor_id = ? "
+        "AND target_id = ? AND action = ?",
+        (chat_id, actor_id, target_id, action),
+    ).fetchone()
+    conn.commit()
+    conn.close()
+    return row["c"]
+
+
+def top_actions(chat_id: int, limit: int = 5):
+    """Most frequent actor->target->action combos in this chat."""
+    conn = db()
+    rows = conn.execute(
+        "SELECT actor_id, target_id, action, COUNT(*) AS c FROM actions "
+        "WHERE chat_id = ? GROUP BY actor_id, target_id, action "
+        "ORDER BY c DESC LIMIT ?",
+        (chat_id, limit),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
 def format_task_line(row) -> str:
     d = datetime.strptime(row["due_date"], "%Y-%m-%d").date()
     today = today_kz()
@@ -683,6 +769,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"А ещё можно вызвать меня где угодно, даже там, где меня нет в чате — "
             f"просто напиши @{context.bot.username} и текст в любом окне ввода Telegram."
         )
+    text += (
+        "\n\n🎭 Ещё есть весёлые команды: ответь на чьё-нибудь сообщение словом вроде "
+        "«обнять», «погладить», «ударить», «поцеловать» и т.п. (всего 30 штук) — "
+        "пришлю шуточную сценку с вашими именами. /topactions — топ по чату."
+    )
+    if ASK_ENABLED:
+        text += (
+            "\n\n🤔 /ask — задай мне любой вопрос прямо в чате, например:\n"
+            "/ask объясни, что такое рекурсия"
+        )
     await update.message.reply_text(text)
 
 
@@ -792,11 +888,14 @@ async def _finish_add_task(
     return f"Готово ✅\n[{SUBJECT_NAME[subject]}] {title} — {d.strftime('%d.%m.%Y')}{time_part}{desc_part}{attach_part}"
 
 
-def user_short_name(update: Update) -> str:
-    user = update.effective_user
+def short_name(user) -> str:
     if not user:
         return "кто-то"
     return user.first_name or (f"@{user.username}" if user.username else f"id{user.id}")
+
+
+def user_short_name(update: Update) -> str:
+    return short_name(update.effective_user)
 
 
 async def add_time_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2041,10 +2140,37 @@ def _message_mentions_bot(update: Update, bot_username: str) -> bool:
     return f"@{bot_username.lower()}" in msg.text.lower()
 
 
+async def handle_action_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str):
+    msg = update.message
+    original = msg.reply_to_message
+    target_user = original.from_user if original else None
+    if target_user is None:
+        return
+
+    emoji, phrases = ACTIONS[action]
+    actor_name = short_name(update.effective_user)
+    target_name = short_name(target_user)
+    phrase = random.choice(phrases).format(a=actor_name, t=target_name)
+
+    count = log_action_and_count(
+        update.effective_chat.id, update.effective_user.id, target_user.id, action
+    )
+    tail = f" (уже {count}-й раз!)" if count > 1 else ""
+    await msg.reply_text(f"{emoji} {phrase}{tail}")
+
+
 async def handle_translate_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     original = msg.reply_to_message
-    if original is None or not _message_mentions_bot(update, context.bot.username):
+    if original is None:
+        return
+
+    action_key = (msg.text or "").strip().lower()
+    if action_key in ACTIONS:
+        await handle_action_reply(update, context, action_key)
+        return
+
+    if not TRANSLATE_ENABLED or not _message_mentions_bot(update, context.bot.username):
         return
 
     source_text = original.text or original.caption
@@ -2063,6 +2189,90 @@ async def handle_translate_reply(update: Update, context: ContextTypes.DEFAULT_T
     except Exception as e:
         logger.warning("Translation failed: %s", e)
         await status.edit_text("Не получилось перевести это сообщение.")
+
+
+async def topactions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    rows = top_actions(update.effective_chat.id)
+    if not rows:
+        await update.message.reply_text(
+            "Пока никто никого не обнял, не ударил и вообще ничего не делал 🙂"
+        )
+        return
+    lines = ["🏆 Топ действий в этом чате:"]
+    for i, r in enumerate(rows, start=1):
+        info_a = get_chat_info(r["actor_id"])
+        info_t = get_chat_info(r["target_id"])
+        name_a = display_name(info_a) if info_a else f"id{r['actor_id']}"
+        name_t = display_name(info_t) if info_t else f"id{r['target_id']}"
+        emoji = ACTIONS.get(r["action"], ("🎲", None))[0]
+        lines.append(f"{i}. {emoji} {name_a} → {r['action']} → {name_t}: {r['c']} раз(а)")
+    await update.message.reply_text("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# /ask — general-purpose question to the AI, right in the chat
+# ---------------------------------------------------------------------------
+
+ASK_ENABLED = bool(GROQ_API_KEY)
+GROQ_ASK_MODEL = "openai/gpt-oss-20b"
+
+
+def _ask_groq(question: str) -> str:
+    """Blocking HTTP call — run via asyncio.to_thread."""
+    resp = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+        json={
+            "model": GROQ_ASK_MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты — полезный ассистент в учебном Telegram-боте для студентов. "
+                        "Отвечай кратко, по делу и на русском языке, если пользователь явно "
+                        "не попросил другой язык. Если вопрос касается учёбы (объяснить тему, "
+                        "помочь решить задачу) — объясняй понятно и по шагам, но не растягивай "
+                        "ответ без необходимости."
+                    ),
+                },
+                {"role": "user", "content": question},
+            ],
+            "temperature": 0.4,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    if not ASK_ENABLED:
+        await update.message.reply_text(
+            "Эта функция не настроена — администратору нужно задать GROQ_API_KEY."
+        )
+        return
+
+    question = " ".join(context.args).strip() if context.args else ""
+    if not question and update.message.reply_to_message:
+        question = update.message.reply_to_message.text or update.message.reply_to_message.caption or ""
+    if not question:
+        await update.message.reply_text(
+            "Напиши вопрос после команды, например:\n/ask объясни разницу между стеком и очередью"
+        )
+        return
+
+    status = await update.message.reply_text("🤔 Думаю…")
+    try:
+        answer = await asyncio.to_thread(_ask_groq, question)
+        await status.edit_text(answer)
+    except requests.exceptions.RequestException as e:
+        logger.warning("Groq ask request failed: %s", e)
+        await status.edit_text("Не получилось получить ответ — сервис сейчас недоступен.")
+    except Exception as e:
+        logger.warning("Ask failed: %s", e)
+        await status.edit_text("Не получилось ответить на этот вопрос.")
 
 
 # --- Inline mode: @botusername <text> works in ANY chat, even ones the bot
@@ -2316,13 +2526,21 @@ def main():
             "transcription is disabled. Run: pip install -r requirements.txt"
         )
 
-    if TRANSLATE_ENABLED and requests is not None:
-        app.add_handler(
-            MessageHandler(
-                filters.TEXT & filters.REPLY & ~filters.COMMAND,
-                handle_translate_reply,
-            )
+    # always registered: fun reply-actions work with no external API; the
+    # same handler also does reply-to-translate when GROQ_API_KEY is set
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & filters.REPLY & ~filters.COMMAND,
+            handle_translate_reply,
         )
+    )
+    app.add_handler(CommandHandler("topactions", topactions_cmd))
+    if ASK_ENABLED and requests is not None:
+        app.add_handler(CommandHandler("ask", ask_cmd))
+        logger.info("/ask enabled (Groq).")
+    logger.info("Fun reply-actions enabled (%d actions).", len(ACTIONS))
+
+    if TRANSLATE_ENABLED and requests is not None:
         app.add_handler(InlineQueryHandler(inline_translate))
         logger.info("Reply-to-translate and inline translation enabled (Groq).")
 
