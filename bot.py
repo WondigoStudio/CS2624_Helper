@@ -215,7 +215,9 @@ ACTIONS = {
 # back to plain emoji. Get IDs with /emojiid (admin-only, see below), then
 # fill them in here, e.g.:
 #   CUSTOM_EMOJI_IDS = {"обнять": "5368324170671202286", ...}
-CUSTOM_EMOJI_IDS: dict = {}
+CUSTOM_EMOJI_IDS: dict = {
+    "засмеять": "5370953476635368811",
+}
 
 CHOOSING_SUBJECT, TYPING_TITLE, TYPING_DATE, TYPING_TIME = range(4)
 CHOOSING_TARGET_USER, SCH_WEEKDAY, SCH_SUBJECT, SCH_TIME, SCH_ROOM = range(4, 9)
