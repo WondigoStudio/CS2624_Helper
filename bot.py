@@ -114,8 +114,8 @@ TIMEZONE = ZoneInfo("Asia/Almaty")
 REMINDER_HOUR = 8
 REMINDER_MINUTE = 0
 
-SCHEDULE_HOUR = 7
-SCHEDULE_MINUTE = 30
+SCHEDULE_HOUR = 23
+SCHEDULE_MINUTE = 00
 
 ADMIN_IDS = {1762280778}
 
@@ -207,6 +207,15 @@ ACTIONS = {
     "извиниться":    ("🙏", ["{a} извинился(лась) перед {t}"]),
     "поблагодарить": ("🙌", ["{a} поблагодарил(а) {t}"]),
 }
+
+# Optional: map an action key -> a Telegram custom (premium) emoji ID, to
+# use INSTEAD of the plain unicode emoji when sending the standalone
+# animated-emoji message. Requires the account that created this bot (via
+# @BotFather) to have Telegram Premium — otherwise sending silently falls
+# back to plain emoji. Get IDs with /emojiid (admin-only, see below), then
+# fill them in here, e.g.:
+#   CUSTOM_EMOJI_IDS = {"обнять": "5368324170671202286", ...}
+CUSTOM_EMOJI_IDS: dict = {}
 
 CHOOSING_SUBJECT, TYPING_TITLE, TYPING_DATE, TYPING_TIME = range(4)
 CHOOSING_TARGET_USER, SCH_WEEKDAY, SCH_SUBJECT, SCH_TIME, SCH_ROOM = range(4, 9)
@@ -774,11 +783,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "«обнять», «погладить», «ударить», «поцеловать» и т.п. (всего 30 штук) — "
         "пришлю шуточную сценку с вашими именами. /topactions — топ по чату."
     )
-    if ASK_ENABLED:
-        text += (
-            "\n\n🤔 /ask — задай мне любой вопрос прямо в чате, например:\n"
-            "/ask объясни, что такое рекурсия"
-        )
     await update.message.reply_text(text)
 
 
@@ -892,6 +896,15 @@ def short_name(user) -> str:
     if not user:
         return "кто-то"
     return user.first_name or (f"@{user.username}" if user.username else f"id{user.id}")
+
+
+def mention_html(user) -> str:
+    """A clickable link to the user's Telegram profile, showing their short
+    name as the link text. Works even for users with no @username, via
+    Telegram's tg://user?id=... deep link. Requires parse_mode=HTML."""
+    if not user:
+        return "кто-то"
+    return f'<a href="tg://user?id={user.id}">{html.escape(short_name(user))}</a>'
 
 
 def user_short_name(update: Update) -> str:
@@ -2148,15 +2161,37 @@ async def handle_action_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     emoji, phrases = ACTIONS[action]
-    actor_name = short_name(update.effective_user)
-    target_name = short_name(target_user)
-    phrase = random.choice(phrases).format(a=actor_name, t=target_name)
+    actor_link = mention_html(update.effective_user)
+    target_link = mention_html(target_user)
+    phrase = random.choice(phrases).format(a=actor_link, t=target_link)
 
     count = log_action_and_count(
         update.effective_chat.id, update.effective_user.id, target_user.id, action
     )
     tail = f" (уже {count}-й раз!)" if count > 1 else ""
-    await msg.reply_text(f"{emoji} {phrase}{tail}")
+    await msg.reply_text(f"{emoji} {phrase}{tail}", parse_mode=ParseMode.HTML)
+
+    # sent as its OWN message with nothing else in it — Telegram clients
+    # play a full-screen animation when you tap a message that's only a
+    # single "animatable" emoji (❤️🔥🎉😂👊 etc.); this doesn't work when
+    # the emoji is mixed into a longer sentence, only standalone.
+    # If a premium custom emoji id is configured for this action, use that
+    # instead — falls back to the plain emoji if sending it fails (e.g. the
+    # bot's owner account doesn't have Telegram Premium).
+    custom_id = CUSTOM_EMOJI_IDS.get(action)
+    if custom_id:
+        try:
+            await msg.reply_text(
+                f'<tg-emoji emoji-id="{custom_id}">{emoji}</tg-emoji>',
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        except Exception as e:
+            logger.warning("Could not send custom emoji for '%s': %s", action, e)
+    try:
+        await msg.reply_text(emoji)
+    except Exception as e:
+        logger.warning("Could not send standalone emoji: %s", e)
 
 
 async def handle_translate_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2191,6 +2226,37 @@ async def handle_translate_reply(update: Update, context: ContextTypes.DEFAULT_T
         await status.edit_text("Не получилось перевести это сообщение.")
 
 
+async def emojiid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only helper: send this command, then send a message containing
+    a custom/premium emoji — the bot replies with its custom_emoji_id, so
+    you can paste it into CUSTOM_EMOJI_IDS in the code."""
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда доступна только администраторам бота.")
+        return
+    await update.message.reply_text(
+        "Пришли сообщение с premium-эмодзи (можно вместе с другим текстом) — "
+        "отвечу его custom_emoji_id."
+    )
+
+
+async def emojiid_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Passive listener: whenever an admin's message contains a custom
+    emoji entity, report its id. Doesn't interfere with anything else since
+    it only replies when that entity type is actually present."""
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        return
+    entities = update.message.entities or []
+    custom = [e for e in entities if e.type == "custom_emoji"]
+    if not custom:
+        return
+    lines = ["Custom emoji ID:"]
+    for e in custom:
+        piece = update.message.text[e.offset: e.offset + e.length]
+        lines.append(f"{piece} → <code>{e.custom_emoji_id}</code>")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
 async def topactions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     rows = top_actions(update.effective_chat.id)
@@ -2208,71 +2274,6 @@ async def topactions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         emoji = ACTIONS.get(r["action"], ("🎲", None))[0]
         lines.append(f"{i}. {emoji} {name_a} → {r['action']} → {name_t}: {r['c']} раз(а)")
     await update.message.reply_text("\n".join(lines))
-
-
-# ---------------------------------------------------------------------------
-# /ask — general-purpose question to the AI, right in the chat
-# ---------------------------------------------------------------------------
-
-ASK_ENABLED = bool(GROQ_API_KEY)
-GROQ_ASK_MODEL = "openai/gpt-oss-20b"
-
-
-def _ask_groq(question: str) -> str:
-    """Blocking HTTP call — run via asyncio.to_thread."""
-    resp = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-        json={
-            "model": GROQ_ASK_MODEL,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Ты — полезный ассистент в учебном Telegram-боте для студентов. "
-                        "Отвечай кратко, по делу и на русском языке, если пользователь явно "
-                        "не попросил другой язык. Если вопрос касается учёбы (объяснить тему, "
-                        "помочь решить задачу) — объясняй понятно и по шагам, но не растягивай "
-                        "ответ без необходимости."
-                    ),
-                },
-                {"role": "user", "content": question},
-            ],
-            "temperature": 0.4,
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
-
-
-async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    register_chat(update)
-    if not ASK_ENABLED:
-        await update.message.reply_text(
-            "Эта функция не настроена — администратору нужно задать GROQ_API_KEY."
-        )
-        return
-
-    question = " ".join(context.args).strip() if context.args else ""
-    if not question and update.message.reply_to_message:
-        question = update.message.reply_to_message.text or update.message.reply_to_message.caption or ""
-    if not question:
-        await update.message.reply_text(
-            "Напиши вопрос после команды, например:\n/ask объясни разницу между стеком и очередью"
-        )
-        return
-
-    status = await update.message.reply_text("🤔 Думаю…")
-    try:
-        answer = await asyncio.to_thread(_ask_groq, question)
-        await status.edit_text(answer)
-    except requests.exceptions.RequestException as e:
-        logger.warning("Groq ask request failed: %s", e)
-        await status.edit_text("Не получилось получить ответ — сервис сейчас недоступен.")
-    except Exception as e:
-        logger.warning("Ask failed: %s", e)
-        await status.edit_text("Не получилось ответить на этот вопрос.")
 
 
 # --- Inline mode: @botusername <text> works in ANY chat, even ones the bot
@@ -2535,9 +2536,8 @@ def main():
         )
     )
     app.add_handler(CommandHandler("topactions", topactions_cmd))
-    if ASK_ENABLED and requests is not None:
-        app.add_handler(CommandHandler("ask", ask_cmd))
-        logger.info("/ask enabled (Groq).")
+    app.add_handler(CommandHandler("emojiid", emojiid_cmd))
+    app.add_handler(MessageHandler(filters.Entity("custom_emoji"), emojiid_capture))
     logger.info("Fun reply-actions enabled (%d actions).", len(ACTIONS))
 
     if TRANSLATE_ENABLED and requests is not None:
