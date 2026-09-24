@@ -2179,21 +2179,27 @@ async def handle_action_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
     # the emoji is mixed into a longer sentence, only standalone.
     # If a premium custom emoji id is configured for this action, use that
     # instead — falls back to the plain emoji if sending it fails (e.g. the
-    # bot's owner account doesn't have Telegram Premium).
+    # bot's owner account doesn't have Telegram Premium). 
     custom_id = CUSTOM_EMOJI_IDS.get(action)
     if custom_id:
         try:
+            from telegram import MessageEntity
+            
+            # Отправляем чистый текст эмодзи, но вешаем на него разметку кастомного эмодзи
             await msg.reply_text(
-                f'<tg-emoji custom_emoji_id="{custom_id}">{emoji}</tg-emoji>',
-                parse_mode=ParseMode.HTML,
+                text=emoji,
+                entities=[
+                    MessageEntity(
+                        type=MessageEntity.CUSTOM_EMOJI,
+                        offset=0,
+                        length=len(emoji),
+                        custom_emoji_id=str(custom_id)
+                    )
+                ]
             )
             return
         except Exception as e:
             logger.warning("Could not send custom emoji for '%s': %s", action, e)
-    try:
-        await msg.reply_text(emoji)
-    except Exception as e:
-        logger.warning("Could not send standalone emoji: %s", e)
 
 
 async def handle_translate_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
