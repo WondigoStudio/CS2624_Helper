@@ -1554,26 +1554,33 @@ async def set_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
     # 1. Сначала подготавливаем данные из базы
     conn = db()
+    conn.row_factory = sqlite3.Row
     chat_ids = []
     group_members_map = {}
 
-    try:
-        # Получаем все чаты, где включен отчет
+   try:
         rows = conn.execute("SELECT chat_id FROM report_settings").fetchall()
         chat_ids = [r["chat_id"] for r in rows]
+        
+        # ЛОГ ДЛЯ ОТЛАДКИ:
+        logger.info(f"[POLL_DEBUG] Найдено чатов для отчета: {len(chat_ids)} -> {chat_ids}")
 
-        # Для каждого чата забираем сохраненных участников
+        if not chat_ids:
+            logger.warning("[POLL_DEBUG] Список chat_ids пуст! Проверьте таблицу report_settings.")
+            return
+
         for cid in chat_ids:
             members = conn.execute(
                 "SELECT user_id, first_name FROM group_members WHERE chat_id = ?",
                 (cid,)
             ).fetchall()
             group_members_map[cid] = members
+            logger.info(f"[POLL_DEBUG] В чате {cid} найдено участников: {len(members)}")
+
     except Exception as e:
-        logger.error(f"Ошибка чтения из БД в send_morning_poll_job: {e}")
+        logger.error(f"Ошибка чтения из БД в send_morning_poll_job: {e}", exc_info=True)
         return
     finally:
-        # Закрываем соединение с БД СРАЗУ ПОСЛЕ чтения данных
         conn.close()
 
     # 2. Выполняем асинхронную отправку сообщений без открытых транзакций БД
@@ -2858,12 +2865,7 @@ def main():
     app.job_queue.run_daily(
         send_morning_poll_job,
         time=dtime(hour=POLL_HOUR, minute=POLL_MINUTE, tzinfo=TIMEZONE),
-    )
-    app.job_queue.run_daily(
-        send_morning_poll_job,
-        time=dtime(hour=POLL_HOUR, minute=POLL_MINUTE, tzinfo=TIMEZONE),
-        days=(1, 2, 3, 4, 5),  # 1=Вторник, 2=Среда, 3=Четверг, 4=Пятница, 5=Суббота (0=Понедельник, 6=Воскресенье)
-    )
+    ) 
     app.job_queue.run_repeating(check_lesson_reminders, interval=60, first=5)
 
     logger.info("Bot starting (polling)...")
