@@ -1558,7 +1558,7 @@ async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
     chat_ids = []
     group_members_map = {}
 
-   try:
+    try:
         rows = conn.execute("SELECT chat_id FROM report_settings").fetchall()
         chat_ids = [r["chat_id"] for r in rows]
         
