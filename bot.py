@@ -118,7 +118,7 @@ SCHEDULE_HOUR = 7
 SCHEDULE_MINUTE = 30
 
 POLL_HOUR = 22
-POLL_MINUTE = 13
+POLL_MINUTE = 17
 
 ADMIN_IDS = {1762280778}
 
@@ -394,7 +394,24 @@ def init_db():
         )
         """
     )
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS report_settings (
+            chat_id BIGINT PRIMARY KEY,
+            enabled BOOLEAN DEFAULT TRUE,
+            updated_at TEXT
+        )
+    """)
     
+    # Создание таблицы участников группы
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS group_members (
+            chat_id BIGINT,
+            user_id BIGINT,
+            first_name TEXT,
+            updated_at TEXT,
+            PRIMARY KEY (chat_id, user_id)
+        )
+    """)
     # Таблица чатов с включенным утренним опросом
     conn.execute(
         """
