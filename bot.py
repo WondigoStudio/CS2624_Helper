@@ -118,7 +118,7 @@ SCHEDULE_HOUR = 7
 SCHEDULE_MINUTE = 30
 
 POLL_HOUR = 22
-POLL_MINUTE = 23
+POLL_MINUTE = 30
 
 ADMIN_IDS = {1762280778}
 
@@ -2859,7 +2859,11 @@ def main():
         send_morning_poll_job,
         time=dtime(hour=POLL_HOUR, minute=POLL_MINUTE, tzinfo=TIMEZONE),
     )
-    
+    app.job_queue.run_daily(
+        send_morning_poll_job,
+        time=dtime(hour=POLL_HOUR, minute=POLL_MINUTE, tzinfo=TIMEZONE),
+        days=(1, 2, 3, 4, 5),  # 1=Вторник, 2=Среда, 3=Четверг, 4=Пятница, 5=Суббота (0=Понедельник, 6=Воскресенье)
+    )
     app.job_queue.run_repeating(check_lesson_reminders, interval=60, first=5)
 
     logger.info("Bot starting (polling)...")
