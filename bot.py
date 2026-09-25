@@ -117,6 +117,9 @@ REMINDER_MINUTE = 0
 SCHEDULE_HOUR = 7
 SCHEDULE_MINUTE = 30
 
+POLL_HOUR = 7
+POLL_MINUTE = 45
+
 ADMIN_IDS = {1762280778}
 
 # Voice/audio/video transcription (via Groq's free Whisper API). Get a free
@@ -382,6 +385,26 @@ def init_db():
         )
         """
     )
+    # Таблица разрешенных пользователей для расписания
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schedule_allowed_users (
+            user_id BIGINT PRIMARY KEY,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    
+    # Таблица чатов с включенным утренним опросом
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS report_chats (
+            chat_id BIGINT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
     existing_cols = _existing_columns(conn, "tasks")
     if "due_time" not in existing_cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN due_time TEXT")
@@ -410,7 +433,28 @@ def init_db():
     conn.commit()
     conn.close()
 
+def is_schedule_allowed(user_id: int) -> bool:
+    if is_admin(user_id):
+        return True
+    conn = db()
+    row = conn.execute("SELECT user_id FROM schedule_allowed_users WHERE user_id = ?", (user_id,)).fetchone()
+    conn.close()
+    return bool(row)
 
+def allow_user_schedule(user_id: int):
+    conn = db()
+    conn.execute(
+        "INSERT INTO schedule_allowed_users (user_id, created_at) VALUES (?, ?) ON CONFLICT(user_id) DO NOTHING",
+        (user_id, now_kz().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+def disallow_user_schedule(user_id: int):
+    conn = db()
+    conn.execute("DELETE FROM schedule_allowed_users WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
 def register_chat(update: Update):
     chat_id = update.effective_chat.id
     user = update.effective_user
@@ -1331,6 +1375,9 @@ ALL_USERS_SENTINEL = "ALL"
 
 
 async def schedule_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_schedule_allowed(update.effective_user.id):
+      await update.message.reply_text("У вас нет доступа к управлению расписанием.")
+      return ConversationHandler.END
     register_chat(update)
     if is_admin(update.effective_user.id):
         await update.message.reply_text(
@@ -1344,7 +1391,40 @@ async def schedule_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     return SCH_WEEKDAY
 
+async def allow_schedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда доступна только администраторам.")
+        return
+    rows = list_known_users()
+    if not rows:
+        await update.message.reply_text("Пользователей не найдено.")
+        return
+    buttons = [
+        [InlineKeyboardButton(
+            f"{'✅ ' if is_schedule_allowed(r['chat_id']) else ''}{display_name(r)}",
+            callback_data=f"toggle_sch_perm:{r['chat_id']}"
+        )]
+        for r in rows
+    ]
+    await update.message.reply_text(
+        "Выберите пользователя, чтобы переключить доступ к расписанию:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
+async def toggle_schedule_permission_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(update.effective_user.id):
+        return
+    target_id = int(query.data.split(":")[1])
+    if is_schedule_allowed(target_id):
+        disallow_user_schedule(target_id)
+        msg = f"Доступ к расписанию для пользователя {target_id} отключен ❌"
+    else:
+        allow_user_schedule(target_id)
+        msg = f"Доступ к расписанию для пользователя {target_id} включен ✅"
+    await query.edit_message_text(msg)
 async def schedule_target_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1364,7 +1444,88 @@ async def schedule_target_chosen(update: Update, context: ContextTypes.DEFAULT_T
         reply_markup=weekday_keyboard("schwd"),
     )
     return SCH_WEEKDAY
+async def call_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat.type not in ("group", "supergroup"):
+        await update.message.reply_text("Эта команда работает только в группах!")
+        return
 
+    try:
+        admins = await context.bot.get_chat_administrators(chat.id)
+        mentions = []
+        for admin in admins:
+            user = admin.user
+            if user.is_bot:
+                continue
+            name = html.escape(user.first_name or "Участник")
+            mentions.append(f'<a href="tg://user?id={user.id}">{name}</a>')
+
+        if not mentions:
+            await update.message.reply_text("Не удалось найти участников для вызова.")
+            return
+
+        text = "📢 <b>ОБЩИЙ СОЗЫВ!</b>\n\n" + " ".join(mentions)
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        logger.error(f"Ошибка созыва: {e}")
+        await update.message.reply_text("Не удалось созвать участников. Убедитесь, что бот является администратором группы.")
+async def set_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    if update.effective_chat.type not in ("group", "supergroup"):
+        await update.message.reply_text("Эту команду можно использовать только в группе!")
+        return
+    
+    chat_id = update.effective_chat.id
+    conn = db()
+    conn.execute(
+        "INSERT INTO report_chats (chat_id, enabled, created_at) VALUES (?, 1, ?) "
+        "ON CONFLICT(chat_id) DO UPDATE SET enabled = 1",
+        (chat_id, now_kz().isoformat())
+    )
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("Утренний опрос (07:45 со ВТ по СБ) с закрепом и созывом активирован! 📌")
+
+async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
+    now = now_kz()
+    # 1 - Вторник, 2 - Среда, 3 - Четверг, 4 - Пятница, 5 - Суббота
+    if now.weekday() not in (1, 2, 3, 4, 5):
+        return
+
+    conn = db()
+    rows = conn.execute("SELECT chat_id FROM report_chats WHERE enabled = 1").fetchall()
+    conn.close()
+
+    for r in rows:
+        chat_id = r["chat_id"]
+        try:
+            # 1. Отправляем опрос
+            poll_msg = await context.bot.send_poll(
+                chat_id=chat_id,
+                question=f"Опрос на {WEEKDAY_NAMES_FULL_RU[now.weekday()]}: Кто идёт в университет?",
+                options=["Иду", "Не иду", "Опаздываю"],
+                is_anonymous=False
+            )
+            
+            # 2. Закрепляем опрос
+            try:
+                await context.bot.pin_chat_message(chat_id=chat_id, message_id=poll_msg.message_id)
+            except Exception as e:
+                logger.warning(f"Не удалось закрепить сообщение в {chat_id}: {e}")
+
+            # 3. Вызываем участников
+            admins = await context.bot.get_chat_administrators(chat_id)
+            mentions = [
+                f'<a href="tg://user?id={a.user.id}">{html.escape(a.user.first_name or "Участник")}</a>'
+                for a in admins if not a.user.is_bot
+            ]
+            if mentions:
+                call_text = "📢 <b>Пройдите утренний опрос:</b>\n" + " ".join(mentions)
+                await context.bot.send_message(chat_id=chat_id, text=call_text, parse_mode=ParseMode.HTML)
+
+        except Exception as e:
+            logger.error(f"Ошибка отправки опроса в {chat_id}: {e}")
 
 async def schedule_weekday_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1433,6 +1594,9 @@ async def schedule_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def schedule_today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_schedule_allowed(update.effective_user.id):
+      await update.message.reply_text("У вас нет доступа к просмотру расписания.")
+      return
     register_chat(update)
     weekday = now_kz().weekday()
     rows = get_lessons(update.effective_chat.id, weekday)
@@ -1447,6 +1611,9 @@ async def schedule_today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def schedule_week_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_schedule_allowed(update.effective_user.id):
+      await update.message.reply_text("У вас нет доступа к просмотру расписания.")
+      return
     register_chat(update)
     rows = get_lessons(update.effective_chat.id)
     if not rows:
@@ -2497,6 +2664,9 @@ def main():
         fallbacks=[CommandHandler("cancel", schedule_cancel)],
     )
 
+    # ----------------------------------------------------
+    # Основные хэндлеры бота
+    # ----------------------------------------------------
     app.add_handler(CommandHandler("start", start))
     app.add_handler(add_conv)
     app.add_handler(schedule_add_conv)
@@ -2531,6 +2701,15 @@ def main():
     app.add_handler(CallbackQueryHandler(testphoto_chosen, pattern="^testph:"))
     app.add_handler(CommandHandler("testmorning", testmorning_cmd))
 
+    # --- НОВЫЕ ХЭНДЛЕРЫ ---
+    app.add_handler(CommandHandler("call", call_cmd))
+    app.add_handler(CommandHandler("set_report", set_report_cmd))
+    app.add_handler(CommandHandler("allow_schedule", allow_schedule_cmd))
+    app.add_handler(CallbackQueryHandler(toggle_schedule_permission_chosen, pattern="^toggle_sch_perm:"))
+
+    # ----------------------------------------------------
+    # Модули расширений (Голос / Перевод)
+    # ----------------------------------------------------
     if TRANSCRIBE_ENABLED and requests is not None:
         app.add_handler(
             MessageHandler(
@@ -2545,8 +2724,6 @@ def main():
             "transcription is disabled. Run: pip install -r requirements.txt"
         )
 
-    # always registered: fun reply-actions work with no external API; the
-    # same handler also does reply-to-translate when GROQ_API_KEY is set
     app.add_handler(
         MessageHandler(
             filters.TEXT & filters.REPLY & ~filters.COMMAND,
@@ -2561,6 +2738,9 @@ def main():
         app.add_handler(InlineQueryHandler(inline_translate))
         logger.info("Reply-to-translate and inline translation enabled (Groq).")
 
+    # ----------------------------------------------------
+    # Планировщик задач (JobQueue)
+    # ----------------------------------------------------
     app.job_queue.run_daily(
         send_daily_reminders,
         time=dtime(hour=REMINDER_HOUR, minute=REMINDER_MINUTE, tzinfo=TIMEZONE),
@@ -2569,8 +2749,12 @@ def main():
         send_morning_schedule,
         time=dtime(hour=SCHEDULE_HOUR, minute=SCHEDULE_MINUTE, tzinfo=TIMEZONE),
     )
-    # checked once a minute so a "10 minutes before" reminder can fire at
-    # the right minute for any lesson, any day
+    # Новый ежедневный утренний опрос (07:45 Вт-Сб)
+    app.job_queue.run_daily(
+        send_morning_poll_job,
+        time=dtime(hour=POLL_HOUR, minute=POLL_MINUTE, tzinfo=TIMEZONE),
+    )
+    
     app.job_queue.run_repeating(check_lesson_reminders, interval=60, first=5)
 
     logger.info("Bot starting (polling)...")
