@@ -118,7 +118,7 @@ SCHEDULE_HOUR = 7
 SCHEDULE_MINUTE = 30
 
 POLL_HOUR = 22
-POLL_MINUTE = 10
+POLL_MINUTE = 13
 
 ADMIN_IDS = {1762280778}
 
@@ -1535,34 +1535,57 @@ async def set_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Утренний опрос (07:45 со ВТ по СБ) с закрепом и созывом активирован! 📌")
 
 async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
-    now = now_kz()
-    # 1 - Вторник, 2 - Среда, 3 - Четверг, 4 - Пятница, 5 - Суббота
-    if now.weekday() not in (1, 2, 3, 4, 5):
-        return
-
+    # 1. Сначала подготавливаем данные из базы
     conn = db()
-    rows = conn.execute("SELECT chat_id FROM report_chats WHERE enabled = 1").fetchall()
-    conn.close()
+    chat_ids = []
+    group_members_map = {}
 
-    for r in rows:
-        chat_id = r["chat_id"]
+    try:
+        # Получаем все чаты, где включен отчет
+        rows = conn.execute("SELECT chat_id FROM report_settings").fetchall()
+        chat_ids = [r["chat_id"] for r in rows]
+
+        # Для каждого чата забираем сохраненных участников
+        for cid in chat_ids:
+            members = conn.execute(
+                "SELECT user_id, first_name FROM group_members WHERE chat_id = ?",
+                (cid,)
+            ).fetchall()
+            group_members_map[cid] = members
+    except Exception as e:
+        logger.error(f"Ошибка чтения из БД в send_morning_poll_job: {e}")
+        return
+    finally:
+        # Закрываем соединение с БД СРАЗУ ПОСЛЕ чтения данных
+        conn.close()
+
+    # 2. Выполняем асинхронную отправку сообщений без открытых транзакций БД
+    options = ["Да", "Заболел(а)", "Опаздываю", "Нет"]
+
+    for chat_id in chat_ids:
         try:
-            # 1. Отправляем опрос
+            # Отправка опроса
             poll_msg = await context.bot.send_poll(
                 chat_id=chat_id,
-                question=f"Опрос на {WEEKDAY_NAMES_FULL_RU[now.weekday()]}: Кто идёт в университет?",
-                options=["Иду", "Не иду", "Опаздываю"],
-                is_anonymous=False
+                question="Кто идет в университет?",
+                options=options,
+                is_anonymous=False,
             )
-            
-            # 2. Закрепляем опрос
-            try:
-                await context.bot.pin_chat_message(chat_id=chat_id, message_id=poll_msg.message_id)
-            except Exception as e:
-                logger.warning(f"Не удалось закрепить сообщение в {chat_id}: {e}")
 
-            # 3. Вызов всех участников (админы + обычные из БД)
+            # Закрепление опроса
+            try:
+                await context.bot.pin_chat_message(
+                    chat_id=chat_id,
+                    message_id=poll_msg.message_id,
+                    disable_notification=True,
+                )
+            except Exception as pin_err:
+                logger.warning(f"Не удалось закрепить сообщение в {chat_id}: {pin_err}")
+
+            # Формирование созыва
             users_to_tag = {}
+
+            # Получаем админов из Telegram API
             try:
                 admins = await context.bot.get_chat_administrators(chat_id)
                 for a in admins:
@@ -1571,13 +1594,11 @@ async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-            rows = conn.execute(
-                "SELECT user_id, first_name FROM group_members WHERE chat_id = ?", 
-                (chat_id,)
-            ).fetchall()
-            for r in rows:
-                users_to_tag[r["user_id"]] = r["first_name"] or "Участник"
+            # Добавляем участников из словаря (который мы заранее прочитали из БД)
+            for m in group_members_map.get(chat_id, []):
+                users_to_tag[m["user_id"]] = m["first_name"] or "Участник"
 
+            # Отправка тэгов
             if users_to_tag:
                 mentions = [
                     f'<a href="tg://user?id={uid}">{html.escape(name)}</a>'
