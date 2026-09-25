@@ -1257,7 +1257,37 @@ async def edittask_date_typed(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(f"Готово ✅ Дата изменена на {d.strftime('%d.%m.%Y')}.")
     return ConversationHandler.END
 
-
+async def track_group_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Автоматически сохраняет обычных участников группы в БД при их активности"""
+    chat = update.effective_chat
+    user = update.effective_user
+    
+    if chat and chat.type in ("group", "supergroup") and user and not user.is_bot:
+        conn = db()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS group_members (
+                chat_id BIGINT,
+                user_id BIGINT,
+                first_name TEXT,
+                updated_at TEXT,
+                PRIMARY KEY (chat_id, user_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO group_members (chat_id, user_id, first_name, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                first_name = excluded.first_name,
+                updated_at = excluded.updated_at
+            """,
+            (chat.id, user.id, user.first_name, now_kz().isoformat())
+        )
+        conn.commit()
+        conn.close()
+      
 async def edittask_time_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = parse_due_time(update.message.text)
     if t is None:
@@ -1450,26 +1480,43 @@ async def call_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Эта команда работает только в группах!")
         return
 
+    users_to_tag = {}
+
+    # 1. Получаем всех админов напрямую из Telegram
     try:
         admins = await context.bot.get_chat_administrators(chat.id)
-        mentions = []
-        for admin in admins:
-            user = admin.user
-            if user.is_bot:
-                continue
-            name = html.escape(user.first_name or "Участник")
-            mentions.append(f'<a href="tg://user?id={user.id}">{name}</a>')
-
-        if not mentions:
-            await update.message.reply_text("Не удалось найти участников для вызова.")
-            return
-
-        text = "📢 <b>ОБЩИЙ СОЗЫВ!</b>\n\n" + " ".join(mentions)
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-
+        for a in admins:
+            if not a.user.is_bot:
+                users_to_tag[a.user.id] = a.user.first_name or "Участник"
     except Exception as e:
-        logger.error(f"Ошибка созыва: {e}")
-        await update.message.reply_text("Не удалось созвать участников. Убедитесь, что бот является администратором группы.")
+        logger.warning(f"Не удалось получить список админов: {e}")
+
+    # 2. Добавляем ВСЕХ обычных участников, которые есть в нашей БД
+    conn = db()
+    try:
+        rows = conn.execute(
+            "SELECT user_id, first_name FROM group_members WHERE chat_id = ?", 
+            (chat.id,)
+        ).fetchall()
+        for r in rows:
+            users_to_tag[r["user_id"]] = r["first_name"] or "Участник"
+    except Exception as e:
+        logger.warning(f"Ошибка при чтении участников из БД: {e}")
+    finally:
+        conn.close()
+
+    if not users_to_tag:
+        await update.message.reply_text("Пока нет участников для вызова.")
+        return
+
+    # Формируем кликабельные тэги для каждого человека
+    mentions = [
+        f'<a href="tg://user?id={uid}">{html.escape(name)}</a>'
+        for uid, name in users_to_tag.items()
+    ]
+
+    text = "📢 <b>ОБЩИЙ СОЗЫВ!</b>\n\n" + " ".join(mentions)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 async def set_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     if update.effective_chat.type not in ("group", "supergroup"):
@@ -1514,13 +1561,28 @@ async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.warning(f"Не удалось закрепить сообщение в {chat_id}: {e}")
 
-            # 3. Вызываем участников
-            admins = await context.bot.get_chat_administrators(chat_id)
-            mentions = [
-                f'<a href="tg://user?id={a.user.id}">{html.escape(a.user.first_name or "Участник")}</a>'
-                for a in admins if not a.user.is_bot
-            ]
-            if mentions:
+            # 3. Вызов всех участников (админы + обычные из БД)
+            users_to_tag = {}
+            try:
+                admins = await context.bot.get_chat_administrators(chat_id)
+                for a in admins:
+                    if not a.user.is_bot:
+                        users_to_tag[a.user.id] = a.user.first_name or "Участник"
+            except Exception:
+                pass
+
+            rows = conn.execute(
+                "SELECT user_id, first_name FROM group_members WHERE chat_id = ?", 
+                (chat_id,)
+            ).fetchall()
+            for r in rows:
+                users_to_tag[r["user_id"]] = r["first_name"] or "Участник"
+
+            if users_to_tag:
+                mentions = [
+                    f'<a href="tg://user?id={uid}">{html.escape(name)}</a>'
+                    for uid, name in users_to_tag.items()
+                ]
                 call_text = "📢 <b>Пройдите утренний опрос:</b>\n" + " ".join(mentions)
                 await context.bot.send_message(chat_id=chat_id, text=call_text, parse_mode=ParseMode.HTML)
 
@@ -2710,6 +2772,11 @@ def main():
     # ----------------------------------------------------
     # Модули расширений (Голос / Перевод)
     # ----------------------------------------------------
+    # Автоматическое отслеживание ВСЕХ участников группы (для созыва)
+    app.add_handler(
+        MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, track_group_members), 
+        group=-1
+    )
     if TRANSCRIBE_ENABLED and requests is not None:
         app.add_handler(
             MessageHandler(
