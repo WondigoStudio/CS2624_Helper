@@ -118,7 +118,7 @@ SCHEDULE_HOUR = 7
 SCHEDULE_MINUTE = 30
 
 POLL_HOUR = 22
-POLL_MINUTE = 39
+POLL_MINUTE = 46
 
 ADMIN_IDS = {1762280778}
 
@@ -1559,26 +1559,35 @@ async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
     group_members_map = {}
 
     try:
-        rows = conn.execute("SELECT chat_id FROM report_settings").fetchall()
+        # Выбираем только те чаты, где утренний опрос включен (enabled = 1)
+        rows = conn.execute(
+            "SELECT chat_id FROM report_chats WHERE enabled = 1"
+        ).fetchall()
         chat_ids = [r["chat_id"] for r in rows]
-        
-        # ЛОГ ДЛЯ ОТЛАДКИ:
-        logger.info(f"[POLL_DEBUG] Найдено чатов для отчета: {len(chat_ids)} -> {chat_ids}")
+
+        # Лог для проверки
+        logger.info(
+            f"[POLL_DEBUG] Найдено чатов в report_chats: {len(chat_ids)} -> {chat_ids}"
+        )
 
         if not chat_ids:
-            logger.warning("[POLL_DEBUG] Список chat_ids пуст! Проверьте таблицу report_settings.")
+            logger.warning(
+                "[POLL_DEBUG] Список chat_ids пуст! Вызовите /setreport в группе."
+            )
             return
 
+        # Для каждого чата забираем сохраненных участников
         for cid in chat_ids:
             members = conn.execute(
                 "SELECT user_id, first_name FROM group_members WHERE chat_id = ?",
-                (cid,)
+                (cid,),
             ).fetchall()
             group_members_map[cid] = members
-            logger.info(f"[POLL_DEBUG] В чате {cid} найдено участников: {len(members)}")
 
     except Exception as e:
-        logger.error(f"Ошибка чтения из БД в send_morning_poll_job: {e}", exc_info=True)
+        logger.error(
+            f"Ошибка чтения из БД в send_morning_poll_job: {e}", exc_info=True
+        )
         return
     finally:
         conn.close()
