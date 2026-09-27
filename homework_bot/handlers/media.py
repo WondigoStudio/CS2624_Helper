@@ -155,14 +155,26 @@ def _fetch_tiktok_photo_post(url: str) -> dict | None:
 
     match = _TIKTOK_JSON_RE.search(resp.text)
     if not match:
+        logger.warning(
+            "TikTok page for %s (status %s, %d bytes) had no "
+            "__UNIVERSAL_DATA_FOR_REHYDRATION__ script tag — likely served a "
+            "captcha/bot-check page instead of the real one.",
+            url, resp.status_code, len(resp.text),
+        )
         return None
     try:
         data = json.loads(match.group(1))
         item = _find_tiktok_item_struct(data)
         if item is None:
+            logger.warning("TikTok page JSON for %s had no itemStruct anywhere in it.", url)
             return None
         image_post = item.get("imagePost")
         if not image_post:
+            logger.warning(
+                "TikTok item for %s has no imagePost (keys present: %s) — "
+                "probably actually a video post, not a photo post.",
+                url, sorted(item.keys()),
+            )
             return None
         images = []
         for img in image_post.get("images", []):
@@ -170,6 +182,10 @@ def _fetch_tiktok_photo_post(url: str) -> dict | None:
             if url_list:
                 images.append(url_list[0])
         if not images:
+            logger.warning(
+                "TikTok imagePost for %s had %d image entries but none had a usable urlList.",
+                url, len(image_post.get("images", [])),
+            )
             return None
         music_url = None
         play_url = (item.get("music") or {}).get("playUrl")
