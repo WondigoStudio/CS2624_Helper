@@ -8,6 +8,7 @@ import first, from anywhere.
 
 import logging
 import os
+import shutil
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -87,6 +88,22 @@ TRANSLATE_ENABLED = bool(GROQ_API_KEY)
 # person's own chat_id. (Schedules and room photos are NOT affected by this
 # — those stay personal per user, as before.)
 SHARED_TASKS_ID = 0
+
+# Video/audio downloader (Instagram/TikTok/Twitter/YouTube links pasted into
+# chat). Uses yt-dlp, which is pure Python — but converting to mp3 also
+# needs the `ffmpeg` binary installed on the machine (apt-get install
+# ffmpeg on Debian/Ubuntu; on Render, add it via a buildpack or Dockerfile —
+# the default "Web Service"/"Background Worker" images don't include it).
+try:
+    import yt_dlp
+except ImportError:
+    yt_dlp = None
+
+FFMPEG_AVAILABLE = shutil.which("ffmpeg") is not None
+MEDIA_DOWNLOAD_ENABLED = yt_dlp is not None
+# Telegram bots can only upload files up to 50 MB through the regular Bot
+# API (larger needs a self-hosted Local Bot API Server, out of scope here).
+MAX_DOWNLOAD_MB = int(os.environ.get("MAX_DOWNLOAD_MB", "50"))
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
