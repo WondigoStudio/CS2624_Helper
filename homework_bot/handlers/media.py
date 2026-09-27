@@ -114,6 +114,28 @@ _TIKTOK_JSON_RE = re.compile(
 )
 
 
+def _find_tiktok_item_struct(node) -> dict | None:
+    """Walks the page's JSON looking for the post's "itemStruct" object,
+    wherever it ended up. TikTok nests it under a different scope key
+    depending on the page type — "webapp.video-detail" for /video/ posts,
+    something else for /photo/ posts, and it's changed before — so rather
+    than hardcode one exact path, just search for the key by name. It's
+    unambiguous: there's only ever one itemStruct on one of these pages."""
+    if isinstance(node, dict):
+        if "itemStruct" in node and isinstance(node["itemStruct"], dict):
+            return node["itemStruct"]
+        for value in node.values():
+            found = _find_tiktok_item_struct(value)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _find_tiktok_item_struct(item)
+            if found is not None:
+                return found
+    return None
+
+
 def _fetch_tiktok_photo_post(url: str) -> dict | None:
     """yt-dlp's TikTok extractor only knows how to handle /video/ posts, not
     the /photo/ (slideshow) ones — so for those, fall back to reading the
@@ -136,7 +158,9 @@ def _fetch_tiktok_photo_post(url: str) -> dict | None:
         return None
     try:
         data = json.loads(match.group(1))
-        item = data["__DEFAULT_SCOPE__"]["webapp.video-detail"]["itemInfo"]["itemStruct"]
+        item = _find_tiktok_item_struct(data)
+        if item is None:
+            return None
         image_post = item.get("imagePost")
         if not image_post:
             return None
