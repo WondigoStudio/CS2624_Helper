@@ -1,0 +1,243 @@
+"""Background jobs run on the PTB JobQueue: the adaptive morning
+schedule/task reminders, per-lesson heads-up pings, and the morning poll."""
+
+import html
+import sqlite3
+from datetime import timedelta
+
+from telegram.constants import ParseMode
+from telegram.ext import ContextTypes
+
+from .config import SHARED_TASKS_ID, logger
+from .constants import SUBJECT_NAME, WEEKDAY_NAMES_FULL_RU
+from .db import all_chat_ids, db, get_lessons, get_room_photo, get_tasks, list_known_users
+from .formatting import format_lessons_block, format_task_line
+from .states import LESSON_REMINDER_MINUTES
+from .utils import (
+    DEFAULT_SCHEDULE_TIME,
+    DEFAULT_TASKS_TIME,
+    SCHEDULE_OFFSET_MINUTES,
+    TASKS_OFFSET_MINUTES,
+    _chunk_text,
+    _time_minus_minutes,
+    now_kz,
+    today_kz,
+)
+
+
+async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
+    # 1. Сначала подготавливаем данные из базы
+    conn = db()
+    conn.row_factory = sqlite3.Row
+    chat_ids = []
+    group_members_map = {}
+
+    try:
+        # Выбираем только те чаты, где утренний опрос включен (enabled = 1)
+        rows = conn.execute(
+            "SELECT chat_id FROM report_chats WHERE enabled = 1"
+        ).fetchall()
+        chat_ids = [r["chat_id"] for r in rows]
+
+        # Лог для проверки
+        logger.info(
+            f"[POLL_DEBUG] Найдено чатов в report_chats: {len(chat_ids)} -> {chat_ids}"
+        )
+
+        if not chat_ids:
+            logger.warning(
+                "[POLL_DEBUG] Список chat_ids пуст! Вызовите /setreport в группе."
+            )
+            return
+
+        # Для каждого чата забираем сохраненных участников
+        for cid in chat_ids:
+            members = conn.execute(
+                "SELECT user_id, first_name FROM group_members WHERE chat_id = ?",
+                (cid,),
+            ).fetchall()
+            group_members_map[cid] = members
+
+    except Exception as e:
+        logger.error(
+            f"Ошибка чтения из БД в send_morning_poll_job: {e}", exc_info=True
+        )
+        return
+    finally:
+        conn.close()
+
+    # 2. Выполняем асинхронную отправку сообщений без открытых транзакций БД
+    options = ["Да", "Заболел(а)", "Опаздываю", "Нет"]
+
+    for chat_id in chat_ids:
+        try:
+            # Отправка опроса
+            poll_msg = await context.bot.send_poll(
+                chat_id=chat_id,
+                question="Кто идет в университет?",
+                options=options,
+                is_anonymous=False,
+            )
+
+            # Закрепление опроса
+            try:
+                await context.bot.pin_chat_message(
+                    chat_id=chat_id,
+                    message_id=poll_msg.message_id,
+                    disable_notification=True,
+                )
+            except Exception as pin_err:
+                logger.warning(f"Не удалось закрепить сообщение в {chat_id}: {pin_err}")
+
+            # Формирование созыва
+            users_to_tag = {}
+
+            # Получаем админов из Telegram API
+            try:
+                admins = await context.bot.get_chat_administrators(chat_id)
+                for a in admins:
+                    if not a.user.is_bot:
+                        users_to_tag[a.user.id] = a.user.first_name or "Участник"
+            except Exception:
+                pass
+
+            # Добавляем участников из словаря (который мы заранее прочитали из БД)
+            for m in group_members_map.get(chat_id, []):
+                users_to_tag[m["user_id"]] = m["first_name"] or "Участник"
+
+            # Отправка тэгов
+            if users_to_tag:
+                mentions = [
+                    f'<a href="tg://user?id={uid}">{html.escape(name)}</a>'
+                    for uid, name in users_to_tag.items()
+                ]
+                call_text = "📢 <b>Пройдите утренний опрос:</b>\n" + " ".join(mentions)
+                await context.bot.send_message(chat_id=chat_id, text=call_text, parse_mode=ParseMode.HTML)
+
+        except Exception as e:
+            logger.error(f"Ошибка отправки опроса в {chat_id}: {e}")
+
+
+def _adaptive_target_time(chat_id: int, chat_type, offset_minutes: int, default_time: str) -> str:
+    """For a private chat with a filled-in schedule for today, the target
+    send time is offset_minutes before their first lesson. Everyone else
+    (groups, or a private chat with no lessons today / unknown chat_type
+    from before this feature existed) falls back to the same fixed time
+    used for everyone previously."""
+    if chat_type == "private":
+        lessons = get_lessons(chat_id, now_kz().weekday())
+        if lessons:
+            return _time_minus_minutes(lessons[0]["time"], offset_minutes)
+    return default_time
+
+
+async def check_adaptive_schedule(context: ContextTypes.DEFAULT_TYPE):
+    """Runs every minute: sends each chat's morning timetable (+ room
+    photos) once, at the moment that matches its target send time — fixed
+    07:30 for groups, or SCHEDULE_OFFSET_MINUTES before that person's first
+    lesson today for a private chat with a schedule."""
+    now_str = now_kz().strftime("%H:%M")
+    weekday = now_kz().weekday()
+    for row in list_known_users():
+        chat_id = row["chat_id"]
+        target = _adaptive_target_time(chat_id, row["chat_type"], SCHEDULE_OFFSET_MINUTES, DEFAULT_SCHEDULE_TIME)
+        if target != now_str:
+            continue
+        try:
+            await send_morning_schedule_for_chat(context.bot, chat_id, weekday)
+        except Exception as e:
+            logger.warning("Could not send morning schedule to chat %s: %s", chat_id, e)
+
+
+async def check_adaptive_tasks(context: ContextTypes.DEFAULT_TYPE):
+    """Runs every minute: sends the shared homework reminder to each chat
+    once, at the moment that matches its target send time — fixed 08:00 for
+    groups, or TASKS_OFFSET_MINUTES before that person's first lesson today
+    for a private chat with a schedule."""
+    today_iso = today_kz().isoformat()
+    tomorrow_iso = (today_kz() + timedelta(days=1)).isoformat()
+    rows = get_tasks(SHARED_TASKS_ID, start=today_iso, end=tomorrow_iso)
+    if not rows:
+        return
+    text = "🔔 Напоминание (общий список заданий):\n" + "\n".join(format_task_line(r) for r in rows)
+
+    now_str = now_kz().strftime("%H:%M")
+    for row in list_known_users():
+        chat_id = row["chat_id"]
+        target = _adaptive_target_time(chat_id, row["chat_type"], TASKS_OFFSET_MINUTES, DEFAULT_TASKS_TIME)
+        if target != now_str:
+            continue
+        try:
+            for chunk in _chunk_text(text):
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
+        except Exception as e:
+            logger.warning("Could not message chat %s: %s", chat_id, e)
+
+
+async def send_morning_schedule_for_chat(bot, chat_id: int, weekday: int = None) -> bool:
+    if weekday is None:
+        weekday = now_kz().weekday()
+
+    rows = get_lessons(chat_id, weekday)
+    if not rows:
+        return False
+
+    heading = f"🌅 Расписание на {WEEKDAY_NAMES_FULL_RU[weekday].lower()}"
+    text = format_lessons_block(rows, heading)
+    await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
+
+    seen_rooms = []
+    for r in rows:
+        if r["room"] not in seen_rooms:
+            seen_rooms.append(r["room"])
+
+    for room in seen_rooms:
+        photo = get_room_photo(chat_id, room)
+        if not photo:
+            continue
+        file_id, kind = photo
+        caption = f"📍 Кабинет {room}"
+        if kind == "document":
+            await bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
+        else:
+            await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
+
+    return True
+
+
+async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
+    """Runs every minute: for each chat, finds any lesson today whose start
+    time is exactly LESSON_REMINDER_MINUTES from now, and sends a heads-up.
+    Minute-granularity matching means each lesson fires once, at the minute
+    that lines up — no separate dedupe bookkeeping needed."""
+    now = now_kz()
+    weekday = now.weekday()
+    target_time = (now + timedelta(minutes=LESSON_REMINDER_MINUTES)).strftime("%H:%M")
+
+    for chat_id in all_chat_ids():
+        rows = get_lessons(chat_id, weekday)
+        for r in rows:
+            if r["time"] != target_time:
+                continue
+            text = (
+                f"⏰ Через {LESSON_REMINDER_MINUTES} минут: "
+                f"[{SUBJECT_NAME[r['subject']]}] в {r['time']}, каб. {r['room']}"
+            )
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+            except Exception as e:
+                logger.warning("Could not send lesson reminder to chat %s: %s", chat_id, e)
+                continue
+
+            photo = get_room_photo(chat_id, r["room"])
+            if not photo:
+                continue
+            file_id, kind = photo
+            try:
+                caption = f"📍 Кабинет {r['room']}"
+                if kind == "document":
+                    await context.bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
+                else:
+                    await context.bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
+            except Exception as e:
+                logger.warning("Could not send room photo reminder to chat %s: %s", chat_id, e)
