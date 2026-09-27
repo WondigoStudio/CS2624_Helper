@@ -725,11 +725,38 @@ def top_actions(chat_id: int, limit: int = 5):
     return rows
 
 
+def task_due_datetime(row):
+    """Full due date+time (timezone-aware, Kazakhstan) for a task, if its
+    due_time is known. Returns None when the task has no due_time, in which
+    case only the date (not a precise moment) is meaningful."""
+    if not row["due_time"]:
+        return None
+    try:
+        return datetime.strptime(
+            f"{row['due_date']} {row['due_time']}", "%Y-%m-%d %H:%M"
+        ).replace(tzinfo=TIMEZONE)
+    except ValueError:
+        return None
+
+
+def is_task_overdue(row) -> bool:
+    """True once the task's deadline is actually in the past — comparing
+    the exact due date+time when a time was set, and just the date
+    (has the day already ended) when it wasn't."""
+    if row["done"]:
+        return False
+    due_dt = task_due_datetime(row)
+    if due_dt is not None:
+        return due_dt < now_kz()
+    d = datetime.strptime(row["due_date"], "%Y-%m-%d").date()
+    return d < today_kz()
+
+
 def format_task_line(row) -> str:
     d = datetime.strptime(row["due_date"], "%Y-%m-%d").date()
     today = today_kz()
     tag = ""
-    if d < today:
+    if is_task_overdue(row):
         tag = " ⚠️ просрочено"
     elif d == today:
         tag = " 📌 сегодня"
@@ -1035,14 +1062,31 @@ async def add_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+def _overdue_rows(chat_id: int):
+    """All not-done tasks whose deadline has already passed, regardless of
+    due date window — so they show up even on /today or /week where their
+    (past) due_date would otherwise exclude them."""
+    rows = get_tasks(chat_id, only_undone=True)
+    return [r for r in rows if is_task_overdue(r)]
+
+
+def _overdue_block(chat_id: int) -> str:
+    overdue = _overdue_rows(chat_id)
+    if not overdue:
+        return ""
+    return "⚠️ Просрочено:\n" + "\n".join(format_task_line(r) for r in overdue) + "\n\n"
+
+
 async def today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     d = today_kz().isoformat()
-    rows = get_tasks(SHARED_TASKS_ID, start=d, end=d)
-    if not rows:
+    rows = [r for r in get_tasks(SHARED_TASKS_ID, start=d, end=d) if not is_task_overdue(r)]
+    overdue_block = _overdue_block(SHARED_TASKS_ID)
+    if not rows and not overdue_block:
         await update.message.reply_text("На сегодня заданий нет 🎉")
         return
-    text = "Сегодня:\n" + "\n".join(format_task_line(r) for r in rows)
+    body = "Сегодня:\n" + "\n".join(format_task_line(r) for r in rows) if rows else "На сегодня заданий нет."
+    text = overdue_block + body
     await update.message.reply_text(text)
 
 
@@ -1050,11 +1094,13 @@ async def week_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     start = today_kz().isoformat()
     end = (today_kz() + timedelta(days=7)).isoformat()
-    rows = get_tasks(SHARED_TASKS_ID, start=start, end=end)
-    if not rows:
+    rows = [r for r in get_tasks(SHARED_TASKS_ID, start=start, end=end) if not is_task_overdue(r)]
+    overdue_block = _overdue_block(SHARED_TASKS_ID)
+    if not rows and not overdue_block:
         await update.message.reply_text("На эту неделю заданий нет 🎉")
         return
-    text = "На неделю:\n" + "\n".join(format_task_line(r) for r in rows)
+    body = "На неделю:\n" + "\n".join(format_task_line(r) for r in rows) if rows else "На эту неделю заданий нет."
+    text = overdue_block + body
     await update.message.reply_text(text)
 
 
@@ -2240,7 +2286,8 @@ async def calendar_day_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = datetime.strptime(iso_day, "%Y-%m-%d").date()
     rows = get_tasks(SHARED_TASKS_ID, only_undone=False, start=iso_day, end=iso_day)
     if not rows:
-        text = f"{d.strftime('%d.%m.%Y')} — заданий нет 🎉"
+        alert_text = f"{d.strftime('%d.%m.%Y')} — заданий нет 🎉"
+        full_text = None
     else:
         lines = [f"{d.strftime('%d.%m.%Y')}:"]
         for r in rows:
@@ -2249,8 +2296,23 @@ async def calendar_day_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
             attach_part = " 📎" if r["attachment_file_id"] else ""
             desc_part = " 📝" if r["description"] else ""
             lines.append(f"{mark} [{SUBJECT_NAME[r['subject']]}] {r['title']}{time_part}{attach_part}{desc_part}")
-        text = "\n".join(lines)
-    await query.answer(text=text, show_alert=True)
+        full_text = "\n".join(lines)
+        alert_text = full_text
+        # Telegram caps a callback-query alert at 200 characters and errors
+        # out (BadRequest) if it's longer, so keep the popup short and send
+        # the complete list as a normal message below instead of truncating
+        # and losing tasks from view.
+        if len(alert_text) > 200:
+            alert_text = f"{d.strftime('%d.%m.%Y')}: {len(rows)} заданий(-е) — список ниже 👇"
+
+    try:
+        await query.answer(text=alert_text, show_alert=True)
+    except Exception as e:
+        logger.warning("Could not show calendar day alert: %s", e)
+        await query.answer()
+
+    if full_text and full_text != alert_text:
+        await query.message.reply_text(full_text)
 
     # buttons underneath to see the full description or open an attachment —
     # the popup alert itself can't carry buttons, send files, or fit a long
