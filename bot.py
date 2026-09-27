@@ -437,7 +437,7 @@ def init_db():
     if "kind" not in room_cols:
         conn.execute("ALTER TABLE room_photos ADD COLUMN kind TEXT NOT NULL DEFAULT 'photo'")
     chat_cols = _existing_columns(conn, "chats")
-    for col in ("username", "first_name", "last_name", "updated_at"):
+    for col in ("username", "first_name", "last_name", "updated_at", "chat_type"):
         if col not in chat_cols:
             conn.execute(f"ALTER TABLE chats ADD COLUMN {col} TEXT")
     if USE_POSTGRES:
@@ -474,6 +474,7 @@ def disallow_user_schedule(user_id: int):
     conn.close()
 def register_chat(update: Update):
     chat_id = update.effective_chat.id
+    chat_type = update.effective_chat.type  # "private", "group", "supergroup", ...
     user = update.effective_user
     username = user.username if user else None
     first_name = user.first_name if user else None
@@ -481,15 +482,16 @@ def register_chat(update: Update):
     conn = db()
     conn.execute(
         """
-        INSERT INTO chats (chat_id, username, first_name, last_name, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO chats (chat_id, username, first_name, last_name, updated_at, chat_type)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(chat_id) DO UPDATE SET
             username = excluded.username,
             first_name = excluded.first_name,
             last_name = excluded.last_name,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            chat_type = excluded.chat_type
         """,
-        (chat_id, username, first_name, last_name, now_kz().isoformat()),
+        (chat_id, username, first_name, last_name, now_kz().isoformat(), chat_type),
     )
     conn.commit()
     conn.close()
@@ -900,10 +902,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/users — (только для админа) список пользователей, писавших боту\n"
         "/viewschedule — (только для админа) посмотреть расписание любого "
         "пользователя\n\n"
-        f"Каждый день в {REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d} по времени Казахстана "
-        "(UTC+5) я буду присылать напоминание о заданиях на сегодня и завтра.\n"
-        f"А в {SCHEDULE_HOUR:02d}:{SCHEDULE_MINUTE:02d} — расписание на сегодня и фото "
+        f"В группах каждый день в {REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d} по времени "
+        f"Казахстана (UTC+5) я присылаю напоминание о заданиях на сегодня и завтра, "
+        f"а в {SCHEDULE_HOUR:02d}:{SCHEDULE_MINUTE:02d} — расписание на сегодня и фото "
         "кабинетов, если они сохранены.\n"
+        f"В личных чатах эти два сообщения подстраиваются под твоё расписание: "
+        f"расписание приходит за {SCHEDULE_OFFSET_MINUTES} минут, а задания — за "
+        f"{TASKS_OFFSET_MINUTES} минут до твоей первой пары сегодня (если пар на сегодня "
+        f"нет — как обычно, в {SCHEDULE_HOUR:02d}:{SCHEDULE_MINUTE:02d}/"
+        f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}).\n"
         f"Плюс за {LESSON_REMINDER_MINUTES} минут до каждой пары пришлю короткое напоминание."
     )
     if TRANSCRIBE_ENABLED:
@@ -2406,16 +2413,69 @@ async def taskdesc_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
+SCHEDULE_OFFSET_MINUTES = 60  # личка: расписание — за столько минут до первой пары
+TASKS_OFFSET_MINUTES = 30     # личка: напоминание о заданиях — за столько минут до первой пары
+DEFAULT_SCHEDULE_TIME = f"{SCHEDULE_HOUR:02d}:{SCHEDULE_MINUTE:02d}"   # "07:30"
+DEFAULT_TASKS_TIME = f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}"       # "08:00"
+
+
+def _time_minus_minutes(time_str: str, minutes: int) -> str:
+    t = datetime.strptime(time_str, "%H:%M")
+    return (t - timedelta(minutes=minutes)).strftime("%H:%M")
+
+
+def _adaptive_target_time(chat_id: int, chat_type, offset_minutes: int, default_time: str) -> str:
+    """For a private chat with a filled-in schedule for today, the target
+    send time is offset_minutes before their first lesson. Everyone else
+    (groups, or a private chat with no lessons today / unknown chat_type
+    from before this feature existed) falls back to the same fixed time
+    used for everyone previously."""
+    if chat_type == "private":
+        lessons = get_lessons(chat_id, now_kz().weekday())
+        if lessons:
+            return _time_minus_minutes(lessons[0]["time"], offset_minutes)
+    return default_time
+
+
+async def check_adaptive_schedule(context: ContextTypes.DEFAULT_TYPE):
+    """Runs every minute: sends each chat's morning timetable (+ room
+    photos) once, at the moment that matches its target send time — fixed
+    07:30 for groups, or SCHEDULE_OFFSET_MINUTES before that person's first
+    lesson today for a private chat with a schedule."""
+    now_str = now_kz().strftime("%H:%M")
+    weekday = now_kz().weekday()
+    for row in list_known_users():
+        chat_id = row["chat_id"]
+        target = _adaptive_target_time(chat_id, row["chat_type"], SCHEDULE_OFFSET_MINUTES, DEFAULT_SCHEDULE_TIME)
+        if target != now_str:
+            continue
+        try:
+            await send_morning_schedule_for_chat(context.bot, chat_id, weekday)
+        except Exception as e:
+            logger.warning("Could not send morning schedule to chat %s: %s", chat_id, e)
+
+
+async def check_adaptive_tasks(context: ContextTypes.DEFAULT_TYPE):
+    """Runs every minute: sends the shared homework reminder to each chat
+    once, at the moment that matches its target send time — fixed 08:00 for
+    groups, or TASKS_OFFSET_MINUTES before that person's first lesson today
+    for a private chat with a schedule."""
     today_iso = today_kz().isoformat()
     tomorrow_iso = (today_kz() + timedelta(days=1)).isoformat()
     rows = get_tasks(SHARED_TASKS_ID, start=today_iso, end=tomorrow_iso)
     if not rows:
         return
     text = "🔔 Напоминание (общий список заданий):\n" + "\n".join(format_task_line(r) for r in rows)
-    for chat_id in all_chat_ids():
+
+    now_str = now_kz().strftime("%H:%M")
+    for row in list_known_users():
+        chat_id = row["chat_id"]
+        target = _adaptive_target_time(chat_id, row["chat_type"], TASKS_OFFSET_MINUTES, DEFAULT_TASKS_TIME)
+        if target != now_str:
+            continue
         try:
-            await context.bot.send_message(chat_id=chat_id, text=text)
+            for chunk in _chunk_text(text):
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
         except Exception as e:
             logger.warning("Could not message chat %s: %s", chat_id, e)
 
@@ -2449,15 +2509,6 @@ async def send_morning_schedule_for_chat(bot, chat_id: int, weekday: int = None)
             await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
 
     return True
-
-
-async def send_morning_schedule(context: ContextTypes.DEFAULT_TYPE):
-    weekday = now_kz().weekday()
-    for chat_id in all_chat_ids():
-        try:
-            await send_morning_schedule_for_chat(context.bot, chat_id, weekday)
-        except Exception as e:
-            logger.warning("Could not send morning schedule to chat %s: %s", chat_id, e)
 
 
 # ---------------------------------------------------------------------------
@@ -2985,19 +3036,18 @@ def main():
     # ----------------------------------------------------
     # Планировщик задач (JobQueue)
     # ----------------------------------------------------
-    app.job_queue.run_daily(
-        send_daily_reminders,
-        time=dtime(hour=REMINDER_HOUR, minute=REMINDER_MINUTE, tzinfo=TIMEZONE),
-    )
-    app.job_queue.run_daily(
-        send_morning_schedule,
-        time=dtime(hour=SCHEDULE_HOUR, minute=SCHEDULE_MINUTE, tzinfo=TIMEZONE),
-    )
+    # Расписание и напоминание о заданиях теперь адаптивные: в личке время
+    # отправки подстраивается под первую пару конкретного человека сегодня
+    # (см. check_adaptive_schedule / check_adaptive_tasks), в группах — как
+    # раньше, статично в 07:30/08:00. Поэтому вместо двух run_daily — две
+    # поминутные проверки, как уже сделано для check_lesson_reminders.
+    app.job_queue.run_repeating(check_adaptive_schedule, interval=60, first=5)
+    app.job_queue.run_repeating(check_adaptive_tasks, interval=60, first=5)
     # Новый ежедневный утренний опрос (07:45 Вт-Сб)
     app.job_queue.run_daily(
         send_morning_poll_job,
         time=dtime(hour=POLL_HOUR, minute=POLL_MINUTE, tzinfo=TIMEZONE),
-    ) 
+    )
     app.job_queue.run_repeating(check_lesson_reminders, interval=60, first=5)
 
     logger.info("Bot starting (polling)...")
