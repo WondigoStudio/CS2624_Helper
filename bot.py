@@ -2269,9 +2269,9 @@ def calendar_keyboard(chat_id: int, year: int, month: int) -> InlineKeyboardMark
         if d == today:
             label = f"🔵{day_num}"
         elif iso_day in overdue_days:
-            # deadline already passed — muted marker instead of the urgent
-            # "есть задание" one, since there's nothing left to act on in time
-            label = f"⚪{day_num}"
+            # deadline already passed — no marker at all, same plain look as
+            # a free day (the popup/message still says "просрочено" in text)
+            label = str(day_num)
         elif iso_day in busy_days:
             label = f"🔴{day_num}"
         else:
@@ -2288,12 +2288,9 @@ def calendar_keyboard(chat_id: int, year: int, month: int) -> InlineKeyboardMark
         rows.append(week)
 
     rows.append([
-        InlineKeyboardButton("⬜ свободно", callback_data="noop"),
+        InlineKeyboardButton("⬜ свободно / прошёл дедлайн", callback_data="noop"),
         InlineKeyboardButton("🔴 есть задание", callback_data="noop"),
         InlineKeyboardButton("🔵 сегодня", callback_data="noop"),
-    ])
-    rows.append([
-        InlineKeyboardButton("⚪ дедлайн прошёл", callback_data="noop"),
     ])
 
     prev_month, prev_year = (12, year - 1) if month == 1 else (month - 1, year)
