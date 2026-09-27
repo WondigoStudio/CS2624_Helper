@@ -88,6 +88,15 @@ async def _run_ydl(url: str, out_dir: str, *, audio_only: bool) -> Path:
     if YTDLP_COOKIES_FILE:
         ydl_opts["cookiefile"] = YTDLP_COOKIES_FILE
 
+    # YouTube's normal "web" client increasingly demands a PO token before
+    # it will even list any playable formats — without one, yt-dlp gets an
+    # empty format list and fails with "Requested format is not available",
+    # even though the video is perfectly public. The mobile app clients
+    # (android/ios) don't enforce this as strictly, so trying them first is
+    # the standard workaround and needs no extra setup or cookies. Only
+    # relevant for YouTube; other extractors ignore this option entirely.
+    ydl_opts["extractor_args"] = {"youtube": {"player_client": ["android", "ios", "web"]}}
+
     def _download():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.extract_info(url, download=True)
