@@ -6,6 +6,11 @@
 - YouTube links are ambiguous (could be a 3-hour lecture or a song), so the
   bot instead offers two buttons: download as video, or extract just the
   audio as an mp3.
+- Spotify track links have no video at all, so the bot always treats them
+  as "give me the mp3": it reads the track/artist name off the Spotify page
+  (Spotify itself never gives out the actual audio — its files are DRM
+  protected), searches YouTube for that song, and downloads/extracts audio
+  from whatever YouTube finds.
 
 Both paths shell out to yt-dlp (a Python library, no external binary
 needed) except mp3 extraction, which also needs the `ffmpeg` binary on the
@@ -13,15 +18,24 @@ host — see config.FFMPEG_AVAILABLE.
 """
 
 import asyncio
+import html
 import re
 import tempfile
 import uuid
 from pathlib import Path
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, Update
 from telegram.ext import ContextTypes
 
-from ..config import FFMPEG_AVAILABLE, MAX_DOWNLOAD_MB, MEDIA_DOWNLOAD_ENABLED, YTDLP_COOKIES_FILE, logger, yt_dlp
+from ..config import (
+    FFMPEG_AVAILABLE,
+    MAX_DOWNLOAD_MB,
+    MEDIA_DOWNLOAD_ENABLED,
+    YTDLP_COOKIES_FILE,
+    logger,
+    requests,
+    yt_dlp,
+)
 
 # Matches a URL whose host is one of the supported platforms. Doesn't try
 # to validate the whole URL shape — just finds "https://.../..." starting
@@ -36,6 +50,12 @@ _YOUTUBE_RE = re.compile(
     r"https?://(?:www\.|m\.)?(?:youtube\.com/\S+|youtu\.be/\S+)",
     re.IGNORECASE,
 )
+_SPOTIFY_TRACK_RE = re.compile(
+    r"https?://open\.spotify\.com/(?:intl-\w+/)?track/\S+",
+    re.IGNORECASE,
+)
+# Spotify's track page <title> looks like "Song Name - song by Artist Name | Spotify".
+_SPOTIFY_TITLE_RE = re.compile(r"<title>(.*?) - song by (.*?) \| Spotify</title>")
 
 MAX_BYTES = MAX_DOWNLOAD_MB * 1024 * 1024
 
@@ -47,13 +67,50 @@ _pending_youtube_links: dict = {}
 
 
 def _looks_downloadable(text: str) -> bool:
-    return bool(text) and (_DIRECT_VIDEO_RE.search(text) or _YOUTUBE_RE.search(text))
+    return bool(text) and (
+        _DIRECT_VIDEO_RE.search(text) or _YOUTUBE_RE.search(text) or _SPOTIFY_TRACK_RE.search(text)
+    )
 
 
-async def _run_ydl(url: str, out_dir: str, *, audio_only: bool) -> Path:
+def _fetch_spotify_track(url: str) -> tuple[str, str] | None:
+    """Reads the track/artist name off a Spotify track page's <title> tag.
+    No Spotify API key needed — this is just the public page's HTML, the
+    same thing a browser would show as the tab title. Returns None if the
+    page couldn't be fetched or didn't match the expected title format
+    (e.g. Spotify changed their markup, or it's a playlist/album link, not
+    a track)."""
+    if requests is None:
+        return None
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning("Failed to fetch Spotify page %s: %s", url, e)
+        return None
+    match = _SPOTIFY_TITLE_RE.search(resp.text)
+    if not match:
+        return None
+    title, artist = html.unescape(match.group(1)).strip(), html.unescape(match.group(2)).strip()
+    return (title, artist) if title and artist else None
+
+
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
+
+
+async def _run_ydl(url: str, out_dir: str, *, audio_only: bool, allow_playlist: bool = False) -> list[Path]:
     """Runs the actual (blocking) yt-dlp download in a worker thread and
-    returns the path to the resulting file."""
-    out_template = str(Path(out_dir) / "%(id)s.%(ext)s")
+    returns the paths to the resulting file(s) — usually one, but an
+    Instagram/TikTok carousel post (several photos/videos in one post) can
+    produce several, which is what allow_playlist is for: yt-dlp treats a
+    carousel as a "playlist" of its items, and noplaylist=True (the default
+    everywhere else, so a YouTube video that happens to be part of some
+    playlist doesn't unexpectedly pull in the whole thing) would otherwise
+    silently keep just the first item."""
+    out_template = str(Path(out_dir) / "%(playlist_index)s_%(id)s.%(ext)s")
 
     if audio_only:
         ydl_opts = {
@@ -62,7 +119,7 @@ async def _run_ydl(url: str, out_dir: str, *, audio_only: bool) -> Path:
             "postprocessors": [
                 {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
             ],
-            "noplaylist": True,
+            "noplaylist": not allow_playlist,
             "quiet": True,
             "no_warnings": True,
         }
@@ -77,7 +134,8 @@ async def _run_ydl(url: str, out_dir: str, *, audio_only: bool) -> Path:
             "format": "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b",
             "outtmpl": out_template,
             "merge_output_format": "mp4",
-            "noplaylist": True,
+            "noplaylist": not allow_playlist,
+            "ignoreerrors": "only_download" if allow_playlist else False,
             "quiet": True,
             "no_warnings": True,
         }
@@ -125,30 +183,70 @@ async def _run_ydl(url: str, out_dir: str, *, audio_only: bool) -> Path:
 
     # Rather than trust yt-dlp's pre-postprocessing filename (mp3 extraction
     # renames the file afterwards), just look at what actually landed in
-    # the empty temp dir we gave it — there's exactly one output file.
-    produced = [p for p in Path(out_dir).iterdir() if p.is_file()]
+    # the temp dir we gave it — sorted so a carousel's photos/videos keep
+    # the order they were posted in (the playlist_index prefix in
+    # out_template sorts correctly as a string up to 9999 items, plenty for
+    # any real post).
+    produced = sorted((p for p in Path(out_dir).iterdir() if p.is_file()), key=lambda p: p.name)
     if not produced:
         raise FileNotFoundError("yt-dlp produced no output file")
-    return produced[0]
+    return produced
 
 
-async def _send_downloaded_file(message, path: Path, *, audio_only: bool, caption: str):
-    size = path.stat().st_size
-    if size > MAX_BYTES:
+async def _send_downloaded_files(message, paths: list[Path], *, audio_only: bool, caption: str):
+    oversized = [p for p in paths if p.stat().st_size > MAX_BYTES]
+    paths = [p for p in paths if p not in oversized]
+    if oversized and not paths:
         await message.reply_text(
-            f"Файл весит {size / 1024 / 1024:.0f} МБ — это больше лимита в "
-            f"{MAX_DOWNLOAD_MB} МБ, который разрешает загружать обычный Telegram-бот. "
-            "Попробуй ссылку покороче/пониже качеством."
+            f"Файл весит больше лимита в {MAX_DOWNLOAD_MB} МБ, который разрешает "
+            "загружать обычный Telegram-бот. Попробуй ссылку покороче/пониже качеством."
         )
         return
-    with open(path, "rb") as f:
-        if audio_only:
+    if not paths:
+        raise FileNotFoundError("nothing left to send")
+
+    if audio_only:
+        # Always exactly one file on this path (mp3 extraction of a single
+        # track), so no album/multi-file case to handle here.
+        with open(paths[0], "rb") as f:
             await message.reply_audio(audio=f, caption=caption)
-        else:
-            await message.reply_video(video=f, caption=caption, supports_streaming=True)
+    elif len(paths) == 1:
+        path = paths[0]
+        with open(path, "rb") as f:
+            if path.suffix.lower() in _IMAGE_EXTS:
+                await message.reply_photo(photo=f, caption=caption)
+            else:
+                await message.reply_video(video=f, caption=caption, supports_streaming=True)
+    else:
+        # A carousel post: several photos and/or video clips in one post.
+        # Telegram's media-group ("album") API caps at 10 items per group,
+        # and wants every file handle kept open until send_media_group
+        # actually uploads them — hence the nested ExitStack instead of a
+        # `with open(...) as f` per item.
+        from contextlib import ExitStack
+
+        for batch_start in range(0, len(paths), 10):
+            batch = paths[batch_start : batch_start + 10]
+            with ExitStack() as stack:
+                media = []
+                for i, path in enumerate(batch):
+                    f = stack.enter_context(open(path, "rb"))
+                    item_caption = caption if (batch_start == 0 and i == 0) else None
+                    if path.suffix.lower() in _IMAGE_EXTS:
+                        media.append(InputMediaPhoto(media=f, caption=item_caption))
+                    else:
+                        media.append(InputMediaVideo(media=f, caption=item_caption, supports_streaming=True))
+                await message.reply_media_group(media=media)
+    if oversized:
+        await message.reply_text(
+            f"{len(oversized)} файл(ов) из поста весят больше лимита в {MAX_DOWNLOAD_MB} МБ "
+            "и не отправлены."
+        )
 
 
-async def _download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, *, audio_only: bool):
+async def _download_and_send(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, *, audio_only: bool, allow_playlist: bool = False
+):
     if not MEDIA_DOWNLOAD_ENABLED:
         return
     if audio_only and not FFMPEG_AVAILABLE:
@@ -158,15 +256,29 @@ async def _download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     status = await update.effective_message.reply_text(
-        "🎵 Скачиваю аудио…" if audio_only else "⏳ Скачиваю видео…"
+        "🎵 Скачиваю аудио…" if audio_only else "⏳ Скачиваю…"
     )
     with tempfile.TemporaryDirectory(prefix="ytdl_") as tmp_dir:
         try:
-            path = await _run_ydl(url, tmp_dir, audio_only=audio_only)
-            if not path.exists():
-                raise FileNotFoundError(path)
-            await _send_downloaded_file(
-                update.effective_message, path, audio_only=audio_only, caption=""
+            try:
+                paths = await _run_ydl(url, tmp_dir, audio_only=audio_only, allow_playlist=allow_playlist)
+            except Exception as e:
+                # yt-dlp's TikTok extractor doesn't recognize the
+                # /@user/photo/<id> URL shape a slideshow/photo post gets
+                # (only /@user/video/<id>) and fails with "Unsupported URL"
+                # before even trying — but TikTok itself resolves either
+                # path for the same post id, so retry once with /video/
+                # substituted in before giving up.
+                if "Unsupported URL" in str(e) and "tiktok.com" in url and "/photo/" in url:
+                    retry_url = url.replace("/photo/", "/video/")
+                    logger.info("Retrying TikTok photo-post URL as /video/: %s", retry_url)
+                    paths = await _run_ydl(
+                        retry_url, tmp_dir, audio_only=audio_only, allow_playlist=allow_playlist
+                    )
+                else:
+                    raise
+            await _send_downloaded_files(
+                update.effective_message, paths, audio_only=audio_only, caption=""
             )
             await status.delete()
         except Exception as e:
@@ -203,7 +315,7 @@ async def handle_media_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     direct_match = _DIRECT_VIDEO_RE.search(text)
     if direct_match:
-        await _download_and_send(update, context, direct_match.group(0), audio_only=False)
+        await _download_and_send(update, context, direct_match.group(0), audio_only=False, allow_playlist=True)
         return
 
     yt_match = _YOUTUBE_RE.search(text)
