@@ -1,3 +1,15 @@
-python-telegram-bot[job-queue]>=22.8
+python-telegram-bot[job-queue]>=22.5
+
+# Optional: only needed if you set DATABASE_URL to use Postgres instead of
+# the local SQLite file.
 psycopg2-binary>=2.9
+
+# Optional: only needed for voice/audio/video transcription and the
+# translation features (both require GROQ_API_KEY to actually turn on).
 requests>=2.31
+
+# Optional: only needed for the Instagram/TikTok/Twitter/YouTube link
+# downloader. mp3 extraction from YouTube also needs the `ffmpeg` binary
+# installed on the host (not a pip package — apt-get install ffmpeg, or add
+# it via your platform's buildpack/Dockerfile).
+yt-dlp>=2025.1.1
