@@ -2263,20 +2263,20 @@ def calendar_keyboard(chat_id: int, year: int, month: int) -> InlineKeyboardMark
     for day_num in range(1, days_in_month + 1):
         d = date(year, month, day_num)
         iso_day = d.isoformat()
-        # Telegram inline buttons have no color/style field at all — the API
-        # rejects unknown button fields outright — so status is shown with a
-        # leading emoji in the label instead of a "style" attribute.
+        # Bot API 9.4 / PTB 22.7+ added a real "style" field for inline
+        # buttons, but only three values exist: primary (blue), success
+        # (green), danger (red). There is no fourth "transparent" value —
+        # that's simply what a button looks like with no style set at all.
         if d == today:
-            label = f"🔵{day_num}"
+            style = "primary"       # синий
         elif iso_day in overdue_days:
-            # deadline already passed — no marker at all, same plain look as
-            # a free day (the popup/message still says "просрочено" in text)
-            label = str(day_num)
+            style = None            # прозрачный (дефолтный вид) — дедлайн прошёл
         elif iso_day in busy_days:
-            label = f"🔴{day_num}"
+            style = "danger"        # красный
         else:
-            label = str(day_num)
-        week.append(InlineKeyboardButton(label, callback_data=f"day:{iso_day}"))
+            style = "success"       # зелёный
+        kwargs = {"style": style} if style else {}
+        week.append(InlineKeyboardButton(str(day_num), callback_data=f"day:{iso_day}", **kwargs))
 
         if len(week) == 7:
             rows.append(week)
@@ -2288,9 +2288,12 @@ def calendar_keyboard(chat_id: int, year: int, month: int) -> InlineKeyboardMark
         rows.append(week)
 
     rows.append([
-        InlineKeyboardButton("⬜ свободно / прошёл дедлайн", callback_data="noop"),
-        InlineKeyboardButton("🔴 есть задание", callback_data="noop"),
-        InlineKeyboardButton("🔵 сегодня", callback_data="noop"),
+        InlineKeyboardButton("свободно", callback_data="noop", style="success"),
+        InlineKeyboardButton("есть задание", callback_data="noop", style="danger"),
+        InlineKeyboardButton("сегодня", callback_data="noop", style="primary"),
+    ])
+    rows.append([
+        InlineKeyboardButton("дедлайн прошёл (без цвета)", callback_data="noop"),
     ])
 
     prev_month, prev_year = (12, year - 1) if month == 1 else (month - 1, year)
