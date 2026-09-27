@@ -19,6 +19,7 @@ host — see config.FFMPEG_AVAILABLE.
 
 import asyncio
 import html
+import json
 import re
 import tempfile
 import uuid
@@ -99,6 +100,107 @@ def _fetch_spotify_track(url: str) -> tuple[str, str] | None:
 
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
+
+
+_TIKTOK_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.tiktok.com/",
+}
+_TIKTOK_JSON_RE = re.compile(
+    r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>', re.DOTALL
+)
+
+
+def _fetch_tiktok_photo_post(url: str) -> dict | None:
+    """yt-dlp's TikTok extractor only knows how to handle /video/ posts, not
+    the /photo/ (slideshow) ones — so for those, fall back to reading the
+    same data TikTok's own web page uses to render itself: a JSON blob
+    embedded directly in the HTML (no login/API key needed, it's public).
+    Returns {'images': [url, ...], 'music': url|None}, or None if the page
+    couldn't be fetched or its structure didn't match what we expect (TikTok
+    can and does change this layout without notice)."""
+    if requests is None:
+        return None
+    try:
+        resp = requests.get(url, headers=_TIKTOK_HEADERS, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning("Failed to fetch TikTok photo post %s: %s", url, e)
+        return None
+
+    match = _TIKTOK_JSON_RE.search(resp.text)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(1))
+        item = data["__DEFAULT_SCOPE__"]["webapp.video-detail"]["itemInfo"]["itemStruct"]
+        image_post = item.get("imagePost")
+        if not image_post:
+            return None
+        images = []
+        for img in image_post.get("images", []):
+            url_list = (img.get("imageURL") or {}).get("urlList") or []
+            if url_list:
+                images.append(url_list[0])
+        if not images:
+            return None
+        music_url = None
+        play_url = (item.get("music") or {}).get("playUrl")
+        if isinstance(play_url, dict):
+            url_list = play_url.get("urlList") or []
+            music_url = url_list[0] if url_list else None
+        elif isinstance(play_url, str):
+            music_url = play_url or None
+        return {"images": images, "music": music_url}
+    except Exception as e:
+        logger.warning("Failed to parse TikTok photo post JSON for %s: %s", url, e)
+        return None
+
+
+async def _download_tiktok_photo_post(url: str, out_dir: str) -> dict:
+    """Downloads a TikTok photo/slideshow post's images (and its background
+    music, if any) straight over HTTP using the URLs _fetch_tiktok_photo_post
+    found, bypassing yt-dlp entirely for this case. Returns
+    {'images': [Path, ...], 'music': Path|None} — kept separate because the
+    music is a plain audio track, not part of the photo album, and has to be
+    sent to Telegram differently (reply_audio, not as an album item)."""
+    info = await asyncio.to_thread(_fetch_tiktok_photo_post, url)
+    if not info:
+        raise RuntimeError("TikTok photo post extraction failed — page structure didn't match")
+
+    def _download_all() -> dict:
+        images = []
+        for i, img_url in enumerate(info["images"]):
+            r = requests.get(img_url, headers=_TIKTOK_HEADERS, timeout=20)
+            r.raise_for_status()
+            ext = ".jpg"
+            content_type = r.headers.get("Content-Type", "")
+            if "png" in content_type:
+                ext = ".png"
+            elif "webp" in content_type:
+                ext = ".webp"
+            path = Path(out_dir) / f"{i:03d}_photo{ext}"
+            path.write_bytes(r.content)
+            images.append(path)
+
+        music_path = None
+        if info.get("music"):
+            try:
+                r = requests.get(info["music"], headers=_TIKTOK_HEADERS, timeout=20)
+                r.raise_for_status()
+                music_path = Path(out_dir) / "music.mp3"
+                music_path.write_bytes(r.content)
+            except Exception as e:
+                # Background music is a nice-to-have, not worth failing the
+                # whole post over if TikTok's audio CDN hiccups.
+                logger.warning("Failed to download TikTok photo post music for %s: %s", url, e)
+
+        return {"images": images, "music": music_path}
+
+    return await asyncio.to_thread(_download_all)
 
 
 async def _run_ydl(url: str, out_dir: str, *, audio_only: bool, allow_playlist: bool = False) -> list[Path]:
@@ -258,33 +360,35 @@ async def _download_and_send(
     status = await update.effective_message.reply_text(
         "🎵 Скачиваю аудио…" if audio_only else "⏳ Скачиваю…"
     )
+    is_tiktok_photo_post = "tiktok.com" in url and "/photo/" in url
     with tempfile.TemporaryDirectory(prefix="ytdl_") as tmp_dir:
         try:
-            try:
+            if is_tiktok_photo_post:
+                # yt-dlp has no extractor at all for TikTok's photo/slideshow
+                # posts (only real videos), so this bypasses it entirely and
+                # reads the images straight off TikTok's own page data.
+                post = await _download_tiktok_photo_post(url, tmp_dir)
+                await _send_downloaded_files(
+                    update.effective_message, post["images"], audio_only=False, caption=""
+                )
+                if post["music"]:
+                    with open(post["music"], "rb") as f:
+                        await update.effective_message.reply_audio(audio=f)
+            else:
                 paths = await _run_ydl(url, tmp_dir, audio_only=audio_only, allow_playlist=allow_playlist)
-            except Exception as e:
-                # yt-dlp's TikTok extractor doesn't recognize the
-                # /@user/photo/<id> URL shape a slideshow/photo post gets
-                # (only /@user/video/<id>) and fails with "Unsupported URL"
-                # before even trying — but TikTok itself resolves either
-                # path for the same post id, so retry once with /video/
-                # substituted in before giving up.
-                if "Unsupported URL" in str(e) and "tiktok.com" in url and "/photo/" in url:
-                    retry_url = url.replace("/photo/", "/video/")
-                    logger.info("Retrying TikTok photo-post URL as /video/: %s", retry_url)
-                    paths = await _run_ydl(
-                        retry_url, tmp_dir, audio_only=audio_only, allow_playlist=allow_playlist
-                    )
-                else:
-                    raise
-            await _send_downloaded_files(
-                update.effective_message, paths, audio_only=audio_only, caption=""
-            )
+                await _send_downloaded_files(
+                    update.effective_message, paths, audio_only=audio_only, caption=""
+                )
             await status.delete()
         except Exception as e:
             logger.warning("Media download failed for %s: %s", url, e)
             msg = str(e)
-            if "Sign in to confirm" in msg:
+            if is_tiktok_photo_post:
+                await status.edit_text(
+                    "Не получилось скачать фото из этого TikTok-поста — TikTok мог "
+                    "поменять формат страницы. Попробуй ещё раз или другую ссылку."
+                )
+            elif "Sign in to confirm" in msg:
                 await status.edit_text(
                     "YouTube попросил подтвердить, что это не бот, и заблокировал "
                     "скачивание — так теперь бывает почти со всеми YouTube-ссылками. "
