@@ -2263,17 +2263,20 @@ def calendar_keyboard(chat_id: int, year: int, month: int) -> InlineKeyboardMark
     for day_num in range(1, days_in_month + 1):
         d = date(year, month, day_num)
         iso_day = d.isoformat()
+        # Telegram inline buttons have no color/style field at all — the API
+        # rejects unknown button fields outright — so status is shown with a
+        # leading emoji in the label instead of a "style" attribute.
         if d == today:
-            style = "primary"
+            label = f"🔵{day_num}"
         elif iso_day in overdue_days:
-            # deadline already passed — faded/muted instead of the urgent
-            # "есть задание" red, since there's nothing left to act on in time
-            style = "secondary"
+            # deadline already passed — muted marker instead of the urgent
+            # "есть задание" one, since there's nothing left to act on in time
+            label = f"⚪{day_num}"
         elif iso_day in busy_days:
-            style = "danger"
+            label = f"🔴{day_num}"
         else:
-            style = "success"
-        week.append(InlineKeyboardButton(str(day_num), callback_data=f"day:{iso_day}", style=style))
+            label = str(day_num)
+        week.append(InlineKeyboardButton(label, callback_data=f"day:{iso_day}"))
 
         if len(week) == 7:
             rows.append(week)
@@ -2285,12 +2288,12 @@ def calendar_keyboard(chat_id: int, year: int, month: int) -> InlineKeyboardMark
         rows.append(week)
 
     rows.append([
-        InlineKeyboardButton("свободно", callback_data="noop", style="success"),
-        InlineKeyboardButton("есть задание", callback_data="noop", style="danger"),
-        InlineKeyboardButton("сегодня", callback_data="noop", style="primary"),
+        InlineKeyboardButton("⬜ свободно", callback_data="noop"),
+        InlineKeyboardButton("🔴 есть задание", callback_data="noop"),
+        InlineKeyboardButton("🔵 сегодня", callback_data="noop"),
     ])
     rows.append([
-        InlineKeyboardButton("дедлайн прошёл", callback_data="noop", style="secondary"),
+        InlineKeyboardButton("⚪ дедлайн прошёл", callback_data="noop"),
     ])
 
     prev_month, prev_year = (12, year - 1) if month == 1 else (month - 1, year)
