@@ -360,13 +360,27 @@ async def _download_and_send(
     status = await update.effective_message.reply_text(
         "🎵 Скачиваю аудио…" if audio_only else "⏳ Скачиваю…"
     )
-    is_tiktok_photo_post = "tiktok.com" in url and "/photo/" in url
+    is_maybe_tiktok = "tiktok.com" in url  # covers vt./vm. short links too — they redirect to tiktok.com
+    tried_tiktok_photo_fallback = False
     with tempfile.TemporaryDirectory(prefix="ytdl_") as tmp_dir:
         try:
-            if is_tiktok_photo_post:
+            try:
+                paths = await _run_ydl(url, tmp_dir, audio_only=audio_only, allow_playlist=allow_playlist)
+                await _send_downloaded_files(
+                    update.effective_message, paths, audio_only=audio_only, caption=""
+                )
+            except Exception:
+                if not is_maybe_tiktok:
+                    raise
                 # yt-dlp has no extractor at all for TikTok's photo/slideshow
-                # posts (only real videos), so this bypasses it entirely and
-                # reads the images straight off TikTok's own page data.
+                # posts (only real videos) and fails on them one way or
+                # another — including for vt.tiktok.com short links that
+                # *redirect* to a /photo/ URL, which yt-dlp only discovers
+                # after already committing to the wrong extractor. Either
+                # way, fall back to reading the images straight off TikTok's
+                # own page data (requests follows the short-link redirect on
+                # its own, so the original URL — short or not — works as-is).
+                tried_tiktok_photo_fallback = True
                 post = await _download_tiktok_photo_post(url, tmp_dir)
                 await _send_downloaded_files(
                     update.effective_message, post["images"], audio_only=False, caption=""
@@ -374,16 +388,11 @@ async def _download_and_send(
                 if post["music"]:
                     with open(post["music"], "rb") as f:
                         await update.effective_message.reply_audio(audio=f)
-            else:
-                paths = await _run_ydl(url, tmp_dir, audio_only=audio_only, allow_playlist=allow_playlist)
-                await _send_downloaded_files(
-                    update.effective_message, paths, audio_only=audio_only, caption=""
-                )
             await status.delete()
         except Exception as e:
             logger.warning("Media download failed for %s: %s", url, e)
             msg = str(e)
-            if is_tiktok_photo_post:
+            if tried_tiktok_photo_fallback:
                 await status.edit_text(
                     "Не получилось скачать фото из этого TikTok-поста — TikTok мог "
                     "поменять формат страницы. Попробуй ещё раз или другую ссылку."
