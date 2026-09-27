@@ -93,9 +93,29 @@ async def _run_ydl(url: str, out_dir: str, *, audio_only: bool) -> Path:
     # empty format list and fails with "Requested format is not available",
     # even though the video is perfectly public. The mobile app clients
     # (android/ios) don't enforce this as strictly, so trying them first is
-    # the standard workaround and needs no extra setup or cookies. Only
-    # relevant for YouTube; other extractors ignore this option entirely.
-    ydl_opts["extractor_args"] = {"youtube": {"player_client": ["android", "ios", "web"]}}
+    # the standard cookie-free workaround. BUT those mobile clients don't
+    # use cookies at all — if we *do* have cookies configured, "web" is the
+    # only client that actually benefits from them, so it has to go first
+    # or yt-dlp fails on the cookie-blind mobile clients before ever trying
+    # the one client that would have worked.
+    youtube_clients = ["web", "android", "ios"] if YTDLP_COOKIES_FILE else ["android", "ios", "web"]
+
+    # TikTok's web extractor sometimes gets served a bot-check/placeholder
+    # page instead of the real one ("Unexpected response from webpage
+    # request"), especially without a convincing desktop User-Agent, or
+    # depending on which of TikTok's API edge hosts answers. Neither of
+    # these fully guarantees success — TikTok's protection changes often —
+    # but they're the standard workarounds and don't affect other sites.
+    ydl_opts["extractor_args"] = {
+        "youtube": {"player_client": youtube_clients},
+        "tiktok": {"api_hostname": ["api16-normal-c-useast1a.tiktokv.com"]},
+    }
+    ydl_opts["http_headers"] = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
 
     def _download():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
