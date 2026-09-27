@@ -581,6 +581,17 @@ def get_task_dates_in_month(chat_id: int, year: int, month: int):
     return {r["due_date"] for r in rows}
 
 
+def get_overdue_task_dates_in_month(chat_id: int, year: int, month: int):
+    """Due dates in this month that still have an undone task whose
+    deadline has already passed (see is_task_overdue) — used to fade those
+    calendar days out instead of tagging them as 'просрочено' in text."""
+    start = date(year, month, 1).isoformat()
+    last_day = calendar.monthrange(year, month)[1]
+    end = date(year, month, last_day).isoformat()
+    rows = get_tasks(chat_id, only_undone=True, start=start, end=end)
+    return {r["due_date"] for r in rows if is_task_overdue(r)}
+
+
 def all_chat_ids():
     conn = db()
     rows = conn.execute("SELECT chat_id FROM chats").fetchall()
@@ -813,6 +824,45 @@ def parse_due_time(text: str):
         except ValueError:
             pass
     return None
+
+
+TELEGRAM_MESSAGE_LIMIT = 4096
+
+
+def _chunk_text(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT):
+    """Split text into <=limit-char pieces, breaking on line boundaries
+    where possible so a single task's line is never cut in the middle."""
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    current = ""
+    for line in text.split("\n"):
+        # +1 accounts for the "\n" that will join it back to current
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            if current:
+                chunks.append(current)
+            if len(line) > limit:
+                # a single line longer than the whole limit (very long
+                # description) — hard-split it, nothing better to do
+                for i in range(0, len(line), limit):
+                    chunks.append(line[i:i + limit])
+                current = ""
+            else:
+                current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def reply_text_chunked(message, text: str, **kwargs):
+    """Like message.reply_text, but splits text that would exceed
+    Telegram's 4096-character message cap (otherwise send_message raises
+    BadRequest: Message is too long and the handler crashes)."""
+    for chunk in _chunk_text(text):
+        await message.reply_text(chunk, **kwargs)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1087,7 +1137,7 @@ async def today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     body = "Сегодня:\n" + "\n".join(format_task_line(r) for r in rows) if rows else "На сегодня заданий нет."
     text = overdue_block + body
-    await update.message.reply_text(text)
+    await reply_text_chunked(update.message, text)
 
 
 async def week_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1101,7 +1151,7 @@ async def week_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     body = "На неделю:\n" + "\n".join(format_task_line(r) for r in rows) if rows else "На эту неделю заданий нет."
     text = overdue_block + body
-    await update.message.reply_text(text)
+    await reply_text_chunked(update.message, text)
 
 
 async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1111,7 +1161,7 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Список пуст 🎉")
         return
     text = "Все предстоящие задания:\n" + "\n".join(format_task_line(r) for r in rows)
-    await update.message.reply_text(text)
+    await reply_text_chunked(update.message, text)
 
 
 async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1579,7 +1629,7 @@ async def call_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     text = "📢 <b>ОБЩИЙ СОЗЫВ!</b>\n\n" + " ".join(mentions)
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await reply_text_chunked(update.message, text, parse_mode=ParseMode.HTML)
 async def set_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     if update.effective_chat.type not in ("group", "supergroup"):
@@ -1769,7 +1819,7 @@ async def schedule_today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     heading = f"📅 Расписание на сегодня ({WEEKDAY_NAMES_FULL_RU[weekday].lower()})"
     text = format_lessons_block(rows, heading)
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await reply_text_chunked(update.message, text, parse_mode=ParseMode.HTML)
 
 
 async def schedule_week_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1793,7 +1843,7 @@ async def schedule_week_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         heading = f"{WEEKDAY_EMOJI[i]} {WEEKDAY_NAMES_FULL_RU[i]}{marker}"
         blocks.append(format_lessons_block(by_day[i], heading))
     text = "\n\n".join(blocks)
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await reply_text_chunked(update.message, text, parse_mode=ParseMode.HTML)
 
 
 async def schedule_delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2199,6 +2249,7 @@ MONTH_NAMES_RU = [
 
 def calendar_keyboard(chat_id: int, year: int, month: int) -> InlineKeyboardMarkup:
     busy_days = get_task_dates_in_month(chat_id, year, month)
+    overdue_days = get_overdue_task_dates_in_month(chat_id, year, month)
     today = today_kz()
 
     rows = [
@@ -2214,6 +2265,10 @@ def calendar_keyboard(chat_id: int, year: int, month: int) -> InlineKeyboardMark
         iso_day = d.isoformat()
         if d == today:
             style = "primary"
+        elif iso_day in overdue_days:
+            # deadline already passed — faded/muted instead of the urgent
+            # "есть задание" red, since there's nothing left to act on in time
+            style = "secondary"
         elif iso_day in busy_days:
             style = "danger"
         else:
@@ -2233,6 +2288,9 @@ def calendar_keyboard(chat_id: int, year: int, month: int) -> InlineKeyboardMark
         InlineKeyboardButton("свободно", callback_data="noop", style="success"),
         InlineKeyboardButton("есть задание", callback_data="noop", style="danger"),
         InlineKeyboardButton("сегодня", callback_data="noop", style="primary"),
+    ])
+    rows.append([
+        InlineKeyboardButton("дедлайн прошёл", callback_data="noop", style="secondary"),
     ])
 
     prev_month, prev_year = (12, year - 1) if month == 1 else (month - 1, year)
