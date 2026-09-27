@@ -12,4 +12,13 @@ requests>=2.31
 # downloader. mp3 extraction from YouTube also needs the `ffmpeg` binary
 # installed on the host (not a pip package — apt-get install ffmpeg, or add
 # it via your platform's buildpack/Dockerfile).
+#
+# TikTok/YouTube change their site internals often, which breaks yt-dlp
+# until its maintainers patch it (usually within days) and cut a new
+# release. Because this line uses ">=" and not "==", every fresh install —
+# i.e. every Render deploy — picks up whatever is newest on PyPI at build
+# time. If downloads suddenly start failing with errors mentioning
+# "Unexpected response" or "Requested format is not available", the fix is
+# almost always: trigger a new deploy (Manual Deploy → Clear build cache &
+# deploy on Render) so it reinstalls yt-dlp fresh.
 yt-dlp>=2025.1.1
