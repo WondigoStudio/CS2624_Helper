@@ -105,6 +105,14 @@ MEDIA_DOWNLOAD_ENABLED = yt_dlp is not None
 # API (larger needs a self-hosted Local Bot API Server, out of scope here).
 MAX_DOWNLOAD_MB = int(os.environ.get("MAX_DOWNLOAD_MB", "50"))
 
+# YouTube increasingly demands proof a download request comes from a real
+# signed-in browser ("Sign in to confirm you're not a bot"), which blocks
+# yt-dlp outright without this. Export cookies for youtube.com from a
+# logged-in browser session (e.g. with the "Get cookies.txt LOCALLY"
+# extension, Netscape format) and point this at that file — Instagram/
+# TikTok/Twitter don't need this, only YouTube does.
+YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "").strip() or None
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
