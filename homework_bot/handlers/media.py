@@ -21,7 +21,7 @@ from pathlib import Path
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from ..config import FFMPEG_AVAILABLE, MAX_DOWNLOAD_MB, MEDIA_DOWNLOAD_ENABLED, logger, yt_dlp
+from ..config import FFMPEG_AVAILABLE, MAX_DOWNLOAD_MB, MEDIA_DOWNLOAD_ENABLED, YTDLP_COOKIES_FILE, logger, yt_dlp
 
 # Matches a URL whose host is one of the supported platforms. Doesn't try
 # to validate the whole URL shape — just finds "https://.../..." starting
@@ -78,6 +78,12 @@ async def _run_ydl(url: str, out_dir: str, *, audio_only: bool) -> Path:
             "no_warnings": True,
         }
 
+    # Only YouTube tends to demand this ("Sign in to confirm you're not a
+    # bot"); harmless to pass for every site, yt-dlp just ignores it if the
+    # extractor doesn't use cookies.
+    if YTDLP_COOKIES_FILE:
+        ydl_opts["cookiefile"] = YTDLP_COOKIES_FILE
+
     def _download():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.extract_info(url, download=True)
@@ -132,6 +138,15 @@ async def _download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await status.delete()
         except Exception as e:
             logger.warning("Media download failed for %s: %s", url, e)
+            if "Sign in to confirm" in str(e):
+                await status.edit_text(
+                    "YouTube попросил подтвердить, что это не бот, и заблокировал "
+                    "скачивание — так теперь бывает почти со всеми YouTube-ссылками. "
+                    "Нужно один раз настроить cookies для бота (см. README, "
+                    "переменная YTDLP_COOKIES_FILE). Instagram/TikTok/Twitter это не "
+                    "затрагивает — там всё работает как обычно."
+                )
+                return
             await status.edit_text(
                 "Не получилось скачать 😕 Ссылка приватная, недоступна в нашем "
                 "регионе, или платформа изменила формат — такое бывает."
