@@ -68,9 +68,13 @@ async def _run_ydl(url: str, out_dir: str, *, audio_only: bool) -> Path:
         }
     else:
         ydl_opts = {
-            # Cap resolution — a random Reels/TikTok clip doesn't need 4K,
-            # and this keeps most downloads comfortably under MAX_BYTES.
-            "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+            # yt-dlp's own recommended general-purpose selector: best
+            # video+audio it can merge, falling back to a single combined
+            # format if that's all the site offers (some Shorts/TikTok
+            # clips only expose one format — the old height<=1080 filter
+            # could reject all of them and fail with "Requested format is
+            # not available").
+            "format": "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b",
             "outtmpl": out_template,
             "merge_output_format": "mp4",
             "noplaylist": True,
@@ -138,7 +142,8 @@ async def _download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await status.delete()
         except Exception as e:
             logger.warning("Media download failed for %s: %s", url, e)
-            if "Sign in to confirm" in str(e):
+            msg = str(e)
+            if "Sign in to confirm" in msg:
                 await status.edit_text(
                     "YouTube попросил подтвердить, что это не бот, и заблокировал "
                     "скачивание — так теперь бывает почти со всеми YouTube-ссылками. "
@@ -146,11 +151,18 @@ async def _download_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     "переменная YTDLP_COOKIES_FILE). Instagram/TikTok/Twitter это не "
                     "затрагивает — там всё работает как обычно."
                 )
-                return
-            await status.edit_text(
-                "Не получилось скачать 😕 Ссылка приватная, недоступна в нашем "
-                "регионе, или платформа изменила формат — такое бывает."
-            )
+            elif "Unexpected response from webpage request" in msg or "Requested format is not available" in msg:
+                await status.edit_text(
+                    "Платформа только что поменяла что-то в своём сайте, и наш "
+                    "инструмент (yt-dlp) пока это не понимает — такое бывает и "
+                    "обычно чинится в течение пары дней после обновления yt-dlp "
+                    "до новой версии. Попробуй другую ссылку или зайди позже."
+                )
+            else:
+                await status.edit_text(
+                    "Не получилось скачать 😕 Ссылка приватная, недоступна в нашем "
+                    "регионе, или платформа изменила формат — такое бывает."
+                )
 
 
 async def handle_media_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
