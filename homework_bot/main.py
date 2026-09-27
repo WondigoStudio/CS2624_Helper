@@ -20,6 +20,7 @@ from telegram.ext import (
 from .config import (
     BOT_TOKEN,
     GROQ_API_KEY,
+    MEDIA_DOWNLOAD_ENABLED,
     POLL_HOUR,
     POLL_MINUTE,
     TIMEZONE,
@@ -142,6 +143,7 @@ from .handlers.admin import testmorning_cmd, users_cmd, viewschedule_chosen, vie
 from .handlers.social import call_cmd, set_report_cmd, topactions_cmd, track_group_members
 from .handlers.transcribe import handle_transcribe
 from .handlers.translate import handle_translate_reply, inline_translate
+from .handlers.media import handle_media_link, youtube_download_chosen
 
 from .jobs import (
     check_adaptive_schedule,
@@ -313,6 +315,27 @@ def main():
         logger.warning(
             "GROQ_API_KEY is set but the 'requests' package isn't installed — "
             "transcription is disabled. Run: pip install -r requirements.txt"
+        )
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & filters.Regex(
+                r"https?://(?:www\.|vt\.|vm\.|m\.)?"
+                r"(?:instagram\.com|instagr\.am|tiktok\.com|twitter\.com|x\.com|"
+                r"youtube\.com|youtu\.be)/\S+"
+            )
+            & ~filters.COMMAND,
+            handle_media_link,
+        )
+    )
+    app.add_handler(CallbackQueryHandler(youtube_download_chosen, pattern="^ytdl:"))
+    if MEDIA_DOWNLOAD_ENABLED:
+        logger.info("Media downloader enabled (Instagram/TikTok/Twitter/YouTube).")
+    else:
+        logger.warning(
+            "yt-dlp isn't installed — the media downloader is disabled. "
+            "Run: pip install -r requirements.txt"
         )
 
     app.add_handler(
