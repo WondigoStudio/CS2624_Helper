@@ -122,17 +122,51 @@ MAX_DOWNLOAD_MB = int(os.environ.get("MAX_DOWNLOAD_MB", "50"))
 #     Web Service/Background Worker with no persistent disk — paste the
 #     whole file as one (long) environment variable, and the bot writes it
 #     to a temp file on every startup.
-YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "").strip() or None
-_cookies_content = os.environ.get("YTDLP_COOKIES_CONTENT", "").strip()
-if not YTDLP_COOKIES_FILE and _cookies_content:
-    _cookies_path = Path(tempfile.gettempdir()) / "yt_dlp_cookies.txt"
-    _cookies_path.write_text(_cookies_content + "\n", encoding="utf-8")
-    YTDLP_COOKIES_FILE = str(_cookies_path)
-
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "").strip() or None
+_cookies_content = os.environ.get("YTDLP_COOKIES_CONTENT", "").strip()
+
+# Common misconfiguration: someone pastes the *contents* of cookies.txt into
+# YTDLP_COOKIES_FILE (which is supposed to be a path) instead of using
+# YTDLP_COOKIES_CONTENT. Netscape cookie file lines start with a domain and
+# are tab-separated and way longer than any real filesystem path, so this is
+# an easy, cheap way to catch it early with a clear message instead of a
+# cryptic "[Errno 2] No such file or directory: '.youtube.com...'" the first
+# time someone tries to download a YouTube video.
+if YTDLP_COOKIES_FILE and ("\t" in YTDLP_COOKIES_FILE or len(YTDLP_COOKIES_FILE) > 512):
+    logger.warning(
+        "YTDLP_COOKIES_FILE looks like it contains cookie *data*, not a file "
+        "path (it has tabs / is very long). Did you mean to put this in "
+        "YTDLP_COOKIES_CONTENT instead? Ignoring YTDLP_COOKIES_FILE for now."
+    )
+    if not _cookies_content:
+        _cookies_content = YTDLP_COOKIES_FILE
+    YTDLP_COOKIES_FILE = None
+elif YTDLP_COOKIES_FILE and not Path(YTDLP_COOKIES_FILE).is_file():
+    logger.warning(
+        "YTDLP_COOKIES_FILE=%s does not point to an existing file — ignoring it.",
+        YTDLP_COOKIES_FILE,
+    )
+    YTDLP_COOKIES_FILE = None
+
+if not YTDLP_COOKIES_FILE and _cookies_content:
+    # yt-dlp (via Python's http.cookiejar.MozillaCookieJar) refuses to load a
+    # cookies file unless its very first line is the Netscape magic header —
+    # otherwise it fails with "does not look like a Netscape format cookies
+    # file", even if every cookie line after it is perfectly valid. That
+    # header is easy to lose when copy-pasting just the cookie rows into an
+    # env var (e.g. skipping the "# Netscape HTTP Cookie File" comment at the
+    # top), so make sure it's always there regardless of what was pasted.
+    _NETSCAPE_HEADER = "# Netscape HTTP Cookie File"
+    if _NETSCAPE_HEADER not in _cookies_content.splitlines()[:1]:
+        _cookies_content = _NETSCAPE_HEADER + "\n" + _cookies_content
+    _cookies_path = Path(tempfile.gettempdir()) / "yt_dlp_cookies.txt"
+    _cookies_path.write_text(_cookies_content + "\n", encoding="utf-8")
+    YTDLP_COOKIES_FILE = str(_cookies_path)
 
 # Logged once at import time so a glance at the startup logs on Render
 # immediately answers "did my cookies env var actually get picked up?"
