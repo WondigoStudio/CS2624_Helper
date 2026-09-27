@@ -9,6 +9,7 @@ import first, from anywhere.
 import logging
 import os
 import shutil
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -109,14 +110,45 @@ MAX_DOWNLOAD_MB = int(os.environ.get("MAX_DOWNLOAD_MB", "50"))
 # signed-in browser ("Sign in to confirm you're not a bot"), which blocks
 # yt-dlp outright without this. Export cookies for youtube.com from a
 # logged-in browser session (e.g. with the "Get cookies.txt LOCALLY"
-# extension, Netscape format) and point this at that file — Instagram/
-# TikTok/Twitter don't need this, only YouTube does.
+# extension, Netscape format) and point the bot at them — Instagram/TikTok/
+# Twitter don't need this, only YouTube does.
+#
+# Two ways to provide them, because most hosts (Render included) don't give
+# you a normal place to just drop a file next to the bot:
+#   - YTDLP_COOKIES_FILE: an actual path on disk (e.g. a Render Persistent
+#     Disk you've mounted, or just testing locally).
+#   - YTDLP_COOKIES_CONTENT: the *contents* of that cookies.txt file, pasted
+#     directly into an env var. This is what you want on a normal Render
+#     Web Service/Background Worker with no persistent disk — paste the
+#     whole file as one (long) environment variable, and the bot writes it
+#     to a temp file on every startup.
 YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "").strip() or None
+_cookies_content = os.environ.get("YTDLP_COOKIES_CONTENT", "").strip()
+if not YTDLP_COOKIES_FILE and _cookies_content:
+    _cookies_path = Path(tempfile.gettempdir()) / "yt_dlp_cookies.txt"
+    _cookies_path.write_text(_cookies_content + "\n", encoding="utf-8")
+    YTDLP_COOKIES_FILE = str(_cookies_path)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Logged once at import time so a glance at the startup logs on Render
+# immediately answers "did my cookies env var actually get picked up?"
+# without needing to trigger a download first.
+if YTDLP_COOKIES_FILE:
+    logger.info(
+        "yt-dlp cookies loaded from %s (%s)",
+        YTDLP_COOKIES_FILE,
+        "YTDLP_COOKIES_CONTENT env var" if _cookies_content else "YTDLP_COOKIES_FILE path",
+    )
+else:
+    logger.info(
+        "yt-dlp cookies not configured (YTDLP_COOKIES_FILE / YTDLP_COOKIES_CONTENT "
+        "both unset) — YouTube downloads may hit 'Sign in to confirm you're not a bot'."
+    )
+
 
 
 def start_health_check_server():
