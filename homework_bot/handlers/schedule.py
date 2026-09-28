@@ -215,6 +215,9 @@ async def schedule_week_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def schedule_delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_schedule_allowed(update.effective_user.id):
+        await update.message.reply_text("У вас нет доступа к управлению расписанием.")
+        return
     register_chat(update)
     rows = get_lessons(update.effective_chat.id)
     if not rows:
@@ -242,6 +245,9 @@ async def schedule_delete_chosen(update: Update, context: ContextTypes.DEFAULT_T
 
 # --- /editschedule: change weekday, subject, time or room of a lesson -----
 async def editschedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_schedule_allowed(update.effective_user.id):
+        await update.message.reply_text("У вас нет доступа к управлению расписанием.")
+        return ConversationHandler.END
     register_chat(update)
     rows = get_lessons(update.effective_chat.id)
     if not rows:
@@ -334,6 +340,9 @@ async def editschedule_room_typed(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def schedule_day_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_schedule_allowed(update.effective_user.id):
+        await update.message.reply_text("У вас нет доступа к просмотру расписания.")
+        return
     register_chat(update)
     await update.message.reply_text(
         "На какой день недели показать расписание?",
@@ -381,5 +390,3 @@ async def schedule_day_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.reply_text(
             "ℹ️ Для кабинетов этого дня фото пока не сохранены (/addroomphoto)."
         )
-
-
