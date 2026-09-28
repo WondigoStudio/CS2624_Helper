@@ -20,6 +20,7 @@ from ..db import (
 )
 from ..formatting import _overdue_block, user_short_name
 from ..keyboards import _edit_task_field_keyboard, subject_keyboard
+from ..permissions import is_schedule_allowed
 from ..states import (
     CHOOSING_SUBJECT,
     EDIT_TASK_ATTACHMENT,
@@ -41,6 +42,12 @@ from ..utils import is_task_overdue, parse_due_date, parse_due_time, reply_text_
 
 
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Reuses the same allow-list as the schedule (/allow_schedule) rather
+    # than a separate one — one "trusted to manage shared stuff" list for
+    # both, admins included automatically.
+    if not is_schedule_allowed(update.effective_user.id):
+        await update.message.reply_text("У вас нет доступа к добавлению заданий.")
+        return ConversationHandler.END
     register_chat(update)
     await update.message.reply_text(
         "Выбери предмет:", reply_markup=subject_keyboard("addsub")
@@ -242,6 +249,9 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_schedule_allowed(update.effective_user.id):
+        await update.message.reply_text("У вас нет доступа к управлению заданиями.")
+        return
     register_chat(update)
     rows = get_tasks(SHARED_TASKS_ID)
     if not rows:
@@ -268,6 +278,9 @@ async def done_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_schedule_allowed(update.effective_user.id):
+        await update.message.reply_text("У вас нет доступа к управлению заданиями.")
+        return
     register_chat(update)
     rows = get_tasks(SHARED_TASKS_ID, only_undone=False)
     if not rows:
@@ -330,6 +343,9 @@ async def taskfile_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def edittask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_schedule_allowed(update.effective_user.id):
+        await update.message.reply_text("У вас нет доступа к управлению заданиями.")
+        return ConversationHandler.END
     register_chat(update)
     rows = get_tasks(SHARED_TASKS_ID, only_undone=False)
     if not rows:
@@ -521,5 +537,3 @@ async def taskdesc_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_text(
         f"📝 [{SUBJECT_NAME[task['subject']]}] {task['title']}:\n\n{task['description']}"
     )
-
-
