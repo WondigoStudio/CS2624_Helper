@@ -5,12 +5,23 @@ import html
 import sqlite3
 from datetime import timedelta
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from .config import SHARED_TASKS_ID, logger
 from .constants import SUBJECT_NAME, WEEKDAY_NAMES_FULL_RU
-from .db import all_chat_ids, db, get_lessons, get_room_photo, get_tasks, list_known_users
+from .db import (
+    all_chat_ids,
+    db,
+    disable_reminder,
+    get_all_enabled_reminders,
+    get_lessons,
+    get_room_photo,
+    get_tasks,
+    list_known_users,
+    mark_reminder_sent,
+)
 from .formatting import format_lessons_block, format_task_line
 from .states import LESSON_REMINDER_MINUTES
 from .utils import (
@@ -203,6 +214,48 @@ async def send_morning_schedule_for_chat(bot, chat_id: int, weekday: int = None)
             await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
 
     return True
+
+
+async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
+    """Runs every minute: fires any personal reminder (/remind) whose time
+    matches right now — a one-time reminder on its date, a daily one every
+    day, a weekly one on its weekday — each at most once per calendar day,
+    tracked via last_sent_date (for daily/weekly) or by disabling the
+    one-time reminder right after it fires."""
+    now = now_kz()
+    now_str = now.strftime("%H:%M")
+    today_iso = now.date().isoformat()
+    weekday = now.weekday()
+
+    for row in get_all_enabled_reminders():
+        if row["time"] != now_str:
+            continue
+        if row["repeat"] == "once":
+            should_send = row["remind_date"] == today_iso
+        elif row["repeat"] == "daily":
+            should_send = row["last_sent_date"] != today_iso
+        elif row["repeat"] == "weekly":
+            should_send = row["weekday"] == weekday and row["last_sent_date"] != today_iso
+        else:
+            should_send = False
+        if not should_send:
+            continue
+
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⏱ Отложить на 10 мин", callback_data=f"remsnooze:{row['id']}")]]
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=row["chat_id"], text=f"🔔 Напоминание: {row['text']}", reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.warning("Could not send reminder %s to chat %s: %s", row["id"], row["chat_id"], e)
+            continue
+
+        if row["repeat"] == "once":
+            disable_reminder(row["id"])
+        else:
+            mark_reminder_sent(row["id"], today_iso)
 
 
 async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
