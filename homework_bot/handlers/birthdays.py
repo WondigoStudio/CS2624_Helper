@@ -1,7 +1,10 @@
 """Birthday tracker: /addbirthday (add yourself or someone else via a short
-conversation), /birthdays (full list, nearest first, with delete and a
-period filter — week / 2 weeks / month / all) and /nextbirthday (just the
-single nearest one)."""
+conversation), /importbirthdays (bulk-add by pasting a whole list at once),
+/birthdays (full list, nearest first, with delete and a period filter —
+week / 2 weeks / month / all) and /nextbirthday (just the single nearest
+one)."""
+
+import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
@@ -18,7 +21,7 @@ from ..db import (
 from ..formatting import format_birthday_line
 from ..keyboards import birthday_target_keyboard
 from ..permissions import is_admin
-from ..states import BDAY_DATE, BDAY_TARGET
+from ..states import BDAY_DATE, BDAY_IMPORT, BDAY_TARGET
 from ..utils import next_birthday_date, parse_due_date, reply_text_chunked, today_kz
 
 
@@ -79,6 +82,84 @@ async def addbirthday_date_typed(update: Update, context: ContextTypes.DEFAULT_T
 
 async def addbirthday_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
+    await update.message.reply_text("Отменено.")
+    return ConversationHandler.END
+
+
+# --- Bulk import (/importbirthdays) ----------------------------------
+# Accepts a whole pasted list at once — one entry per line, in whatever
+# loose shape it comes in (a copy-pasted table row, "Имя ДД.ММ.ГГГГ", a
+# bare "Имя ДД.ММ", tab- or space-separated). For each line: the last
+# date-shaped token is the birthday, the name is whatever text sits right
+# before it (for a 4-column table row like
+# "<timestamp>\t<имя>\t<username>\t<дата>" that's the 2nd column, not the
+# username). Lines that are just a bare number (row indices from a pasted
+# table) or that don't contain a recognizable date are skipped and listed
+# back so nothing is silently lost. The year, if present, is NOT stored as
+# a birth year — in a pasted "nearest occurrence" table it's this year's
+# date, not the person's birth year, so keeping it would show a bogus age.
+_BULK_DATE_RE = re.compile(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\s*$")
+
+
+def _parse_bulk_line(line: str):
+    line = line.strip()
+    if not line or line.isdigit():
+        return None
+    m = _BULK_DATE_RE.search(line)
+    if not m:
+        return None
+    day, month = int(m.group(1)), int(m.group(2))
+    if not (1 <= day <= 31 and 1 <= month <= 12):
+        return None
+    before = line[:m.start()].strip()
+    parts = [p.strip() for p in before.split("\t") if p.strip()]
+    if not parts:
+        parts = [p.strip() for p in re.split(r"\s{2,}", before) if p.strip()]
+    if len(parts) >= 3:
+        # timestamp \t имя \t username [\t ...]  — name is the 2nd column
+        name = parts[1]
+    elif parts:
+        name = parts[-1] if len(parts) == 1 else parts[0]
+    else:
+        return None
+    if not name:
+        return None
+    return name, day, month
+
+
+async def importbirthdays_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    await update.message.reply_text(
+        "Пришли список одним сообщением — по одному человеку на строку, как в "
+        "твоей таблице. В каждой строке найду имя и дату (ДД.ММ или "
+        "ДД.ММ.ГГГГ); год рождения не запоминаю, беру только день и месяц. "
+        "/cancel — отменить."
+    )
+    return BDAY_IMPORT
+
+
+async def importbirthdays_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    added_by = update.effective_user.id
+    added, skipped = [], []
+    for line in update.message.text.splitlines():
+        parsed = _parse_bulk_line(line)
+        if parsed is None:
+            if line.strip():
+                skipped.append(line.strip())
+            continue
+        name, day, month = parsed
+        add_birthday(0, chat_id, name, day, month, added_by)
+        added.append(f"{name} — {day:02d}.{month:02d}")
+    report = f"Готово ✅ Добавлено: {len(added)}\n" + "\n".join(added) if added else \
+        "Не добавил ни одной записи — не нашёл дат в строках."
+    if skipped:
+        report += f"\n\n⚠️ Не распознал {len(skipped)} строк(и):\n" + "\n".join(skipped)
+    await reply_text_chunked(update.message, report)
+    return ConversationHandler.END
+
+
+async def importbirthdays_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Отменено.")
     return ConversationHandler.END
 
