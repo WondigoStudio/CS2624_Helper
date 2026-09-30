@@ -11,7 +11,14 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from ..constants import WEEKDAY_NAMES_FULL_RU, WEEKDAY_NAMES_RU
-from ..db import add_reminder, delete_reminder, get_reminder, get_reminders_for_user, register_chat
+from ..db import (
+    add_reminder,
+    confirm_reminder,
+    delete_reminder,
+    get_reminder,
+    get_reminders_for_user,
+    register_chat,
+)
 from ..formatting import format_reminder_line
 from ..keyboards import reminder_when_keyboard, weekday_keyboard
 from ..permissions import is_admin
@@ -197,9 +204,27 @@ async def reminder_delete_chosen(update: Update, context: ContextTypes.DEFAULT_T
     await query.edit_message_text("Удалено 🗑")
 
 
+async def reminder_confirm_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """"✅ Подтверждаю" on a fired reminder — stops the every-5-minutes nag
+    for this occurrence."""
+    query = update.callback_query
+    reminder_id = int(query.data.split(":")[1])
+    row = get_reminder(reminder_id)
+    if not row:
+        await query.answer("Не нашёл это напоминание.", show_alert=True)
+        return
+    confirm_reminder(reminder_id)
+    await query.answer("Принято ✅")
+    try:
+        await query.edit_message_text(f"✅ Подтверждено: {row['text']}")
+    except Exception:
+        pass
+
+
 async def reminder_snooze_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Button attached to a fired reminder — recreates it as a new one-time
-    reminder 10 minutes from now, same text/chat/person."""
+    reminder 10 minutes from now, same text/chat/person, and stops the
+    original occurrence's nag cycle (the snooze IS the response)."""
     query = update.callback_query
     reminder_id = int(query.data.split(":")[1])
     row = get_reminder(reminder_id)
@@ -211,6 +236,7 @@ async def reminder_snooze_chosen(update: Update, context: ContextTypes.DEFAULT_T
         row["chat_id"], row["user_id"], row["text"], "once", when.strftime("%H:%M"),
         remind_date=when.date().isoformat(),
     )
+    confirm_reminder(reminder_id)
     await query.answer("Отложено на 10 минут ⏱")
     try:
         await query.edit_message_reply_markup(reply_markup=None)
