@@ -3,7 +3,7 @@ schedule/task reminders, per-lesson heads-up pings, and the morning poll."""
 
 import html
 import sqlite3
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -13,14 +13,15 @@ from .config import SHARED_TASKS_ID, logger
 from .constants import SUBJECT_NAME, WEEKDAY_NAMES_FULL_RU
 from .db import (
     all_chat_ids,
+    bump_reminder_nag,
     db,
-    disable_reminder,
     get_all_enabled_reminders,
     get_lessons,
+    get_reminders_awaiting_confirmation,
     get_room_photo,
     get_tasks,
     list_known_users,
-    mark_reminder_sent,
+    mark_reminder_fired,
 )
 from .formatting import format_lessons_block, format_task_line
 from .states import LESSON_REMINDER_MINUTES
@@ -216,29 +217,53 @@ async def send_morning_schedule_for_chat(bot, chat_id: int, weekday: int = None)
     return True
 
 
-async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
-    """Runs every minute: fires any personal reminder (/remind) that's due —
-    a one-time reminder on/after its date+time, a daily one from its time
-    onward today, a weekly one from its time onward on its weekday — each at
-    most once per calendar day, tracked via last_sent_date (for daily/
-    weekly) or by disabling the one-time reminder right after it fires.
+REMINDER_NAG_MINUTES = 5
 
-    Uses "is it due yet" (<=) rather than "does it match this exact minute"
-    (==) on purpose: a free-tier host can spin the bot down between requests
-    (no inbound HTTP for a while = suspended), so the one exact minute a
-    reminder was due can pass while nothing is running. With <=, the first
-    check after the bot wakes back up still catches it and sends it late,
-    instead of silently skipping it forever."""
+
+def _reminder_fire_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Подтверждаю", callback_data=f"remconfirm:{reminder_id}"),
+        InlineKeyboardButton("⏱ Отложить на 10 мин", callback_data=f"remsnooze:{reminder_id}"),
+    ]])
+
+
+async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
+    """Runs every minute, two passes:
+
+    1. Fires any personal reminder (/remind) that's due — a one-time
+       reminder on/after its date+time, a daily one from its time onward
+       today, a weekly one from its time onward on its weekday — each at
+       most once per calendar day, tracked via last_sent_date. The message
+       asks for confirmation instead of just informing, and starts the nag
+       cycle (see mark_reminder_fired).
+
+       Uses "is it due yet" (<=) rather than "does it match this exact
+       minute" (==) on purpose: a free-tier host can spin the bot down
+       between requests, or a scheduler misfire can skip a single run (both
+       observed in production), so the one exact minute a reminder was due
+       can pass while nothing checks it. With <=, the first check that does
+       run still catches it and sends it late, instead of silently skipping
+       it forever.
+
+    2. Re-sends (nags) any reminder still awaiting confirmation whose last
+       nag was REMINDER_NAG_MINUTES or more ago — whether the person
+       actively said "not yet" or just never answered, the bot keeps
+       reminding every 5 minutes either way, until "✅ Подтверждаю" is
+       tapped (or the reminder is snoozed/deleted)."""
     now = now_kz()
     now_str = now.strftime("%H:%M")
     today_iso = now.date().isoformat()
     weekday = now.weekday()
+    now_iso = now.isoformat()
 
     for row in get_all_enabled_reminders():
         if row["repeat"] == "once":
-            should_send = bool(row["remind_date"]) and (
-                row["remind_date"] < today_iso
-                or (row["remind_date"] == today_iso and row["time"] <= now_str)
+            should_send = (
+                bool(row["remind_date"]) and not row["last_sent_date"]
+                and (
+                    row["remind_date"] < today_iso
+                    or (row["remind_date"] == today_iso and row["time"] <= now_str)
+                )
             )
         elif row["repeat"] == "daily":
             should_send = row["time"] <= now_str and row["last_sent_date"] != today_iso
@@ -253,21 +278,38 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
         if not should_send:
             continue
 
-        keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("⏱ Отложить на 10 мин", callback_data=f"remsnooze:{row['id']}")]]
-        )
         try:
             await context.bot.send_message(
-                chat_id=row["chat_id"], text=f"🔔 Напоминание: {row['text']}", reply_markup=keyboard
+                chat_id=row["chat_id"],
+                text=f"🔔 Напоминание: {row['text']}\n\nСделано?",
+                reply_markup=_reminder_fire_keyboard(row["id"]),
             )
         except Exception as e:
             logger.warning("Could not send reminder %s to chat %s: %s", row["id"], row["chat_id"], e)
             continue
 
-        if row["repeat"] == "once":
-            disable_reminder(row["id"])
-        else:
-            mark_reminder_sent(row["id"], today_iso)
+        mark_reminder_fired(row["id"], today_iso, now_iso)
+
+    for row in get_reminders_awaiting_confirmation():
+        last_nag = row["last_nag_at"]
+        if not last_nag:
+            continue
+        try:
+            last_nag_dt = datetime.fromisoformat(last_nag)
+        except ValueError:
+            continue
+        if now - last_nag_dt < timedelta(minutes=REMINDER_NAG_MINUTES):
+            continue
+        try:
+            await context.bot.send_message(
+                chat_id=row["chat_id"],
+                text=f"⚠️ Всё ещё не подтверждено: {row['text']}",
+                reply_markup=_reminder_fire_keyboard(row["id"]),
+            )
+        except Exception as e:
+            logger.warning("Could not nag reminder %s in chat %s: %s", row["id"], row["chat_id"], e)
+            continue
+        bump_reminder_nag(row["id"], now_iso)
 
 
 async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
