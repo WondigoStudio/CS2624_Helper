@@ -34,6 +34,7 @@ from .constants import ACTIONS
 from .db import init_db
 from .states import (
     BDAY_DATE,
+    BDAY_IMPORT,
     BDAY_TARGET,
     CHOOSING_SUBJECT,
     CHOOSING_TARGET_USER,
@@ -176,6 +177,9 @@ from .handlers.birthdays import (
     birthday_delete_chosen,
     birthday_filter_chosen,
     birthdays_cmd,
+    importbirthdays_cancel,
+    importbirthdays_start,
+    importbirthdays_text,
     nextbirthday_cmd,
 )
 
@@ -310,6 +314,14 @@ def main():
         fallbacks=[CommandHandler("cancel", addbirthday_cancel)],
     )
 
+    importbirthdays_conv = ConversationHandler(
+        entry_points=[CommandHandler("importbirthdays", importbirthdays_start)],
+        states={
+            BDAY_IMPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, importbirthdays_text)],
+        },
+        fallbacks=[CommandHandler("cancel", importbirthdays_cancel)],
+    )
+
     # ----------------------------------------------------
     # Основные хэндлеры бота
     # ----------------------------------------------------
@@ -325,6 +337,7 @@ def main():
     app.add_handler(CallbackQueryHandler(reminder_snooze_chosen, pattern="^remsnooze:"))
     app.add_handler(CallbackQueryHandler(reminder_confirm_chosen, pattern="^remconfirm:"))
     app.add_handler(addbirthday_conv)
+    app.add_handler(importbirthdays_conv)
     app.add_handler(CommandHandler("birthdays", birthdays_cmd))
     app.add_handler(CommandHandler("nextbirthday", nextbirthday_cmd))
     app.add_handler(CallbackQueryHandler(birthday_delete_chosen, pattern="^bdaydel:"))
