@@ -29,6 +29,18 @@ def _edit_task_field_keyboard():
     ])
 
 
+def reminder_when_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏱ Через 15 минут", callback_data="remwhen:q15")],
+        [InlineKeyboardButton("⏱ Через 1 час", callback_data="remwhen:q60")],
+        [InlineKeyboardButton("⏱ Через 3 часа", callback_data="remwhen:q180")],
+        [InlineKeyboardButton("🌅 Завтра в 9:00", callback_data="remwhen:tmr9")],
+        [InlineKeyboardButton("🔁 Каждый день", callback_data="remwhen:daily")],
+        [InlineKeyboardButton("📅 Каждую неделю", callback_data="remwhen:weekly")],
+        [InlineKeyboardButton("🗓 Своя дата и время", callback_data="remwhen:custom")],
+    ])
+
+
 def weekday_keyboard(prefix: str):
     buttons = [
         [InlineKeyboardButton(f"{WEEKDAY_EMOJI[i]} {WEEKDAY_NAMES_FULL_RU[i]}", callback_data=f"{prefix}:{i}")]
