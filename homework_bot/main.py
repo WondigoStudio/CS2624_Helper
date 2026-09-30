@@ -174,7 +174,9 @@ from .handlers.birthdays import (
     addbirthday_start,
     addbirthday_target_chosen,
     birthday_delete_chosen,
+    birthday_filter_chosen,
     birthdays_cmd,
+    nextbirthday_cmd,
 )
 
 from .jobs import (
@@ -324,7 +326,9 @@ def main():
     app.add_handler(CallbackQueryHandler(reminder_confirm_chosen, pattern="^remconfirm:"))
     app.add_handler(addbirthday_conv)
     app.add_handler(CommandHandler("birthdays", birthdays_cmd))
+    app.add_handler(CommandHandler("nextbirthday", nextbirthday_cmd))
     app.add_handler(CallbackQueryHandler(birthday_delete_chosen, pattern="^bdaydel:"))
+    app.add_handler(CallbackQueryHandler(birthday_filter_chosen, pattern="^bdayfilter:"))
     app.add_handler(CommandHandler("today", today_cmd))
     app.add_handler(CommandHandler("week", week_cmd))
     app.add_handler(CommandHandler("all", all_cmd))
