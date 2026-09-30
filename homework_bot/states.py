@@ -13,3 +13,6 @@ TYPING_DESCRIPTION, TYPING_ATTACHMENT = range(24, 26)
 EDIT_TASK_DESCRIPTION, EDIT_TASK_ATTACHMENT = range(26, 28)
 # How long before a lesson starts to send a heads-up reminder
 LESSON_REMINDER_MINUTES = 10
+# Conversation states for /remind (personal reminders)
+REMIND_TEXT, REMIND_WHEN, REMIND_DAILY_TIME, REMIND_WEEKLY_DAY, REMIND_WEEKLY_TIME, \
+    REMIND_CUSTOM_DATE, REMIND_CUSTOM_TIME = range(28, 35)
