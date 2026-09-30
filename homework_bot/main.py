@@ -161,6 +161,7 @@ from .handlers.reminders import (
     remind_weekly_day_chosen,
     remind_weekly_time_typed,
     remind_when_chosen,
+    reminder_confirm_chosen,
     reminder_delete_chosen,
     reminder_snooze_chosen,
     reminders_cmd,
@@ -301,6 +302,7 @@ def main():
     app.add_handler(CommandHandler("reminders", reminders_cmd))
     app.add_handler(CallbackQueryHandler(reminder_delete_chosen, pattern="^remdel:"))
     app.add_handler(CallbackQueryHandler(reminder_snooze_chosen, pattern="^remsnooze:"))
+    app.add_handler(CallbackQueryHandler(reminder_confirm_chosen, pattern="^remconfirm:"))
     app.add_handler(CommandHandler("today", today_cmd))
     app.add_handler(CommandHandler("week", week_cmd))
     app.add_handler(CommandHandler("all", all_cmd))
