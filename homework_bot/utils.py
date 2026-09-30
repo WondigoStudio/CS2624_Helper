@@ -122,6 +122,24 @@ DEFAULT_SCHEDULE_TIME = f"{SCHEDULE_HOUR:02d}:{SCHEDULE_MINUTE:02d}"   # "07:30"
 DEFAULT_TASKS_TIME = f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}"       # "08:00"
 
 
+def next_birthday_date(day: int, month: int, today: date = None) -> date:
+    """The next calendar occurrence of a day/month, today counting as
+    'next' if it matches. Handles Feb 29 by falling back to Feb 28 in
+    non-leap years (so it never raises)."""
+    if today is None:
+        today = today_kz()
+    for year in (today.year, today.year + 1):
+        try:
+            d = date(year, month, day)
+        except ValueError:
+            # Feb 29 in a non-leap year
+            d = date(year, 2, 28)
+        if d >= today:
+            return d
+    # unreachable in practice, but keep a sane fallback
+    return date(today.year + 1, month, min(day, 28))
+
+
 def _time_minus_minutes(time_str: str, minutes: int) -> str:
     t = datetime.strptime(time_str, "%H:%M")
     return (t - timedelta(minutes=minutes)).strftime("%H:%M")
