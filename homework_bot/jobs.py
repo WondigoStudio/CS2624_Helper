@@ -217,25 +217,37 @@ async def send_morning_schedule_for_chat(bot, chat_id: int, weekday: int = None)
 
 
 async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
-    """Runs every minute: fires any personal reminder (/remind) whose time
-    matches right now — a one-time reminder on its date, a daily one every
-    day, a weekly one on its weekday — each at most once per calendar day,
-    tracked via last_sent_date (for daily/weekly) or by disabling the
-    one-time reminder right after it fires."""
+    """Runs every minute: fires any personal reminder (/remind) that's due —
+    a one-time reminder on/after its date+time, a daily one from its time
+    onward today, a weekly one from its time onward on its weekday — each at
+    most once per calendar day, tracked via last_sent_date (for daily/
+    weekly) or by disabling the one-time reminder right after it fires.
+
+    Uses "is it due yet" (<=) rather than "does it match this exact minute"
+    (==) on purpose: a free-tier host can spin the bot down between requests
+    (no inbound HTTP for a while = suspended), so the one exact minute a
+    reminder was due can pass while nothing is running. With <=, the first
+    check after the bot wakes back up still catches it and sends it late,
+    instead of silently skipping it forever."""
     now = now_kz()
     now_str = now.strftime("%H:%M")
     today_iso = now.date().isoformat()
     weekday = now.weekday()
 
     for row in get_all_enabled_reminders():
-        if row["time"] != now_str:
-            continue
         if row["repeat"] == "once":
-            should_send = row["remind_date"] == today_iso
+            should_send = bool(row["remind_date"]) and (
+                row["remind_date"] < today_iso
+                or (row["remind_date"] == today_iso and row["time"] <= now_str)
+            )
         elif row["repeat"] == "daily":
-            should_send = row["last_sent_date"] != today_iso
+            should_send = row["time"] <= now_str and row["last_sent_date"] != today_iso
         elif row["repeat"] == "weekly":
-            should_send = row["weekday"] == weekday and row["last_sent_date"] != today_iso
+            should_send = (
+                row["weekday"] == weekday
+                and row["time"] <= now_str
+                and row["last_sent_date"] != today_iso
+            )
         else:
             should_send = False
         if not should_send:
