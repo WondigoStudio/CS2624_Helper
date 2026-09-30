@@ -52,6 +52,13 @@ from .states import (
     PHOTO_ROOM_NAME,
     PHOTO_TARGET_USER,
     PHOTO_WAITING,
+    REMIND_CUSTOM_DATE,
+    REMIND_CUSTOM_TIME,
+    REMIND_DAILY_TIME,
+    REMIND_TEXT,
+    REMIND_WEEKLY_DAY,
+    REMIND_WEEKLY_TIME,
+    REMIND_WHEN,
     SCH_ROOM,
     SCH_SUBJECT,
     SCH_TIME,
@@ -144,11 +151,26 @@ from .handlers.social import call_cmd, set_report_cmd, topactions_cmd, track_gro
 from .handlers.transcribe import handle_transcribe
 from .handlers.translate import handle_translate_reply, inline_translate
 from .handlers.media import handle_media_link, youtube_download_chosen
+from .handlers.reminders import (
+    remind_cancel,
+    remind_custom_date_typed,
+    remind_custom_time_typed,
+    remind_daily_time_typed,
+    remind_start,
+    remind_text_typed,
+    remind_weekly_day_chosen,
+    remind_weekly_time_typed,
+    remind_when_chosen,
+    reminder_delete_chosen,
+    reminder_snooze_chosen,
+    reminders_cmd,
+)
 
 from .jobs import (
     check_adaptive_schedule,
     check_adaptive_tasks,
     check_lesson_reminders,
+    check_reminders,
     send_morning_poll_job,
 )
 
@@ -252,6 +274,20 @@ def main():
         fallbacks=[CommandHandler("cancel", schedule_cancel)],
     )
 
+    remind_conv = ConversationHandler(
+        entry_points=[CommandHandler("remind", remind_start)],
+        states={
+            REMIND_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_text_typed)],
+            REMIND_WHEN: [CallbackQueryHandler(remind_when_chosen, pattern="^remwhen:")],
+            REMIND_DAILY_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_daily_time_typed)],
+            REMIND_WEEKLY_DAY: [CallbackQueryHandler(remind_weekly_day_chosen, pattern="^remwd:")],
+            REMIND_WEEKLY_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_weekly_time_typed)],
+            REMIND_CUSTOM_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_custom_date_typed)],
+            REMIND_CUSTOM_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_custom_time_typed)],
+        },
+        fallbacks=[CommandHandler("cancel", remind_cancel)],
+    )
+
     # ----------------------------------------------------
     # Основные хэндлеры бота
     # ----------------------------------------------------
@@ -261,6 +297,10 @@ def main():
     app.add_handler(addroomphoto_conv)
     app.add_handler(edittask_conv)
     app.add_handler(editschedule_conv)
+    app.add_handler(remind_conv)
+    app.add_handler(CommandHandler("reminders", reminders_cmd))
+    app.add_handler(CallbackQueryHandler(reminder_delete_chosen, pattern="^remdel:"))
+    app.add_handler(CallbackQueryHandler(reminder_snooze_chosen, pattern="^remsnooze:"))
     app.add_handler(CommandHandler("today", today_cmd))
     app.add_handler(CommandHandler("week", week_cmd))
     app.add_handler(CommandHandler("all", all_cmd))
@@ -368,6 +408,7 @@ def main():
         time=dtime(hour=POLL_HOUR, minute=POLL_MINUTE, tzinfo=TIMEZONE),
     )
     app.job_queue.run_repeating(check_lesson_reminders, interval=60, first=5)
+    app.job_queue.run_repeating(check_reminders, interval=60, first=5)
 
     logger.info("Bot starting (polling)...")
     app.run_polling()
