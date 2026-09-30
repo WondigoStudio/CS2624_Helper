@@ -184,6 +184,11 @@ def init_db():
         conn.execute("ALTER TABLE tasks ADD COLUMN attachment_file_id TEXT")
     if "attachment_kind" not in existing_cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN attachment_kind TEXT")
+    reminder_cols = _existing_columns(conn, "reminders")
+    if "awaiting_confirmation" not in reminder_cols:
+        conn.execute("ALTER TABLE reminders ADD COLUMN awaiting_confirmation INTEGER NOT NULL DEFAULT 0")
+    if "last_nag_at" not in reminder_cols:
+        conn.execute("ALTER TABLE reminders ADD COLUMN last_nag_at TEXT")
     room_cols = _existing_columns(conn, "room_photos")
     if "kind" not in room_cols:
         conn.execute("ALTER TABLE room_photos ADD COLUMN kind TEXT NOT NULL DEFAULT 'photo'")
@@ -539,3 +544,45 @@ def mark_reminder_sent(reminder_id: int, date_iso: str):
     conn.execute("UPDATE reminders SET last_sent_date = ? WHERE id = ?", (date_iso, reminder_id))
     conn.commit()
     conn.close()
+
+
+def mark_reminder_fired(reminder_id: int, date_iso: str, sent_at_iso: str):
+    """Called right when a reminder's main message goes out: records the
+    date (so once/daily/weekly all correctly skip re-firing until their next
+    due occurrence — see check_reminders) and starts the confirmation-nag
+    cycle by setting awaiting_confirmation and the nag clock."""
+    conn = db()
+    conn.execute(
+        "UPDATE reminders SET last_sent_date = ?, awaiting_confirmation = 1, last_nag_at = ? WHERE id = ?",
+        (date_iso, sent_at_iso, reminder_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def bump_reminder_nag(reminder_id: int, nag_at_iso: str):
+    """Resets the 5-minute nag clock after a follow-up nag message is sent
+    (or after a snooze, so the postponed reminder doesn't ALSO keep
+    nagging about the original occurrence in the meantime)."""
+    conn = db()
+    conn.execute("UPDATE reminders SET last_nag_at = ? WHERE id = ?", (nag_at_iso, reminder_id))
+    conn.commit()
+    conn.close()
+
+
+def confirm_reminder(reminder_id: int):
+    """Stops the nag cycle — the person tapped "✅ Подтверждаю" (or
+    snoozed, which counts as handling this occurrence)."""
+    conn = db()
+    conn.execute("UPDATE reminders SET awaiting_confirmation = 0 WHERE id = ?", (reminder_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_reminders_awaiting_confirmation():
+    conn = db()
+    rows = conn.execute(
+        "SELECT * FROM reminders WHERE enabled = 1 AND awaiting_confirmation = 1"
+    ).fetchall()
+    conn.close()
+    return rows
