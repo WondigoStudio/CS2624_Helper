@@ -6,9 +6,9 @@ from datetime import datetime, timedelta
 
 from telegram import Update
 
-from .constants import SUBJECT_EMOJI, SUBJECT_NAME, WEEKDAY_NAMES_RU
+from .constants import MONTH_NAMES_RU, SUBJECT_EMOJI, SUBJECT_NAME, WEEKDAY_NAMES_RU
 from .db import get_tasks
-from .utils import is_task_overdue, today_kz
+from .utils import is_task_overdue, next_birthday_date, today_kz
 
 
 def format_task_line(row) -> str:
@@ -73,6 +73,23 @@ def format_reminder_line(row) -> str:
         d = datetime.strptime(row["remind_date"], "%Y-%m-%d").date()
         when = f"📅 {d.strftime('%d.%m.%Y')} в {row['time']}"
     return f"#{row['id']} {row['text']} — {when}"
+
+
+def format_birthday_line(row) -> str:
+    today = today_kz()
+    next_date = next_birthday_date(row["day"], row["month"], today)
+    days_left = (next_date - today).days
+    date_part = f"{row['day']:02d} {MONTH_NAMES_RU[row['month']].lower()}"
+    if row["year"]:
+        turns = next_date.year - row["year"]
+        date_part += f" ({turns} лет)"
+    if days_left == 0:
+        when = "🎉 сегодня!"
+    elif days_left == 1:
+        when = "завтра"
+    else:
+        when = f"через {days_left} дн."
+    return f"#{row['id']} {row['display_name']} — {date_part}, {when}"
 
 
 def format_lesson_line(row) -> str:
