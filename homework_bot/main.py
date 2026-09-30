@@ -400,15 +400,21 @@ def main():
     # (см. check_adaptive_schedule / check_adaptive_tasks), в группах — как
     # раньше, статично в 07:30/08:00. Поэтому вместо двух run_daily — две
     # поминутные проверки, как уже сделано для check_lesson_reminders.
+    # Staggered `first=` offsets (5/15/25/35s) so these don't all land on the
+    # same wall-clock second every minute and contend for the scheduler's
+    # executor — when they piled up together, a slow job earlier in the
+    # batch could push a later one past APScheduler's misfire grace window
+    # and cause that entire run to be skipped outright (seen in production:
+    # a reminder's exact-minute check got silently dropped this way).
     app.job_queue.run_repeating(check_adaptive_schedule, interval=60, first=5)
-    app.job_queue.run_repeating(check_adaptive_tasks, interval=60, first=5)
+    app.job_queue.run_repeating(check_adaptive_tasks, interval=60, first=15)
     # Новый ежедневный утренний опрос (07:45 Вт-Сб)
     app.job_queue.run_daily(
         send_morning_poll_job,
         time=dtime(hour=POLL_HOUR, minute=POLL_MINUTE, tzinfo=TIMEZONE),
     )
-    app.job_queue.run_repeating(check_lesson_reminders, interval=60, first=5)
-    app.job_queue.run_repeating(check_reminders, interval=60, first=5)
+    app.job_queue.run_repeating(check_lesson_reminders, interval=60, first=25)
+    app.job_queue.run_repeating(check_reminders, interval=60, first=35)
 
     logger.info("Bot starting (polling)...")
     app.run_polling()
