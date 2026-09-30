@@ -61,6 +61,15 @@ def target_user_keyboard(prefix: str):
     return InlineKeyboardMarkup(buttons)
 
 
+def birthday_target_keyboard(prefix: str):
+    buttons = [[InlineKeyboardButton("Себе", callback_data=f"{prefix}:self")]]
+    for u in list_known_users():
+        buttons.append(
+            [InlineKeyboardButton(display_name(u), callback_data=f"{prefix}:{u['chat_id']}")]
+        )
+    return InlineKeyboardMarkup(buttons)
+
+
 def _edit_lesson_field_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("День недели", callback_data="editlfield:weekday")],
