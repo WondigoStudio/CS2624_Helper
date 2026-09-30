@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from telegram import Update
 
-from .constants import SUBJECT_EMOJI, SUBJECT_NAME
+from .constants import SUBJECT_EMOJI, SUBJECT_NAME, WEEKDAY_NAMES_RU
 from .db import get_tasks
 from .utils import is_task_overdue, today_kz
 
@@ -62,6 +62,17 @@ def _overdue_block(chat_id: int) -> str:
     if not overdue:
         return ""
     return "⚠️ Просрочено:\n" + "\n".join(format_task_line(r) for r in overdue) + "\n\n"
+
+
+def format_reminder_line(row) -> str:
+    if row["repeat"] == "daily":
+        when = f"🔁 каждый день в {row['time']}"
+    elif row["repeat"] == "weekly":
+        when = f"🔁 каждую неделю по {WEEKDAY_NAMES_RU[row['weekday']]} в {row['time']}"
+    else:
+        d = datetime.strptime(row["remind_date"], "%Y-%m-%d").date()
+        when = f"📅 {d.strftime('%d.%m.%Y')} в {row['time']}"
+    return f"#{row['id']} {row['text']} — {when}"
 
 
 def format_lesson_line(row) -> str:
