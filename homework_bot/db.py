@@ -173,6 +173,21 @@ def init_db():
         )
         """
     )
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS birthdays (
+            id {id_pk},
+            user_id BIGINT NOT NULL,
+            chat_id BIGINT NOT NULL,
+            display_name TEXT NOT NULL,
+            day INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            year INTEGER,
+            added_by BIGINT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
     existing_cols = _existing_columns(conn, "tasks")
     if "due_time" not in existing_cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN due_time TEXT")
@@ -201,7 +216,7 @@ def init_db():
         # an earlier version of this schema that used plain INTEGER —
         # modern Telegram user/chat ids commonly exceed the 32-bit range.
         # Safe/no-op if the column is already BIGINT.
-        for table in ("chats", "tasks", "schedule", "room_photos", "reminders"):
+        for table in ("chats", "tasks", "schedule", "room_photos", "reminders", "birthdays"):
             conn.execute(f"ALTER TABLE {table} ALTER COLUMN chat_id TYPE BIGINT")
     conn.commit()
     conn.close()
@@ -586,3 +601,46 @@ def get_reminders_awaiting_confirmation():
     ).fetchall()
     conn.close()
     return rows
+
+
+# --- Birthdays ---------------------------------------------------------
+# One row per person whose birthday is tracked, scoped to the chat it was
+# added in (a group's birthdays list is separate from a private chat's).
+# display_name is a snapshot taken at add-time — the target may never have
+# a row of their own in `chats` (e.g. someone only ever mentioned, not the
+# one who pressed /start), so we can't rely on joining against chats.
+
+def add_birthday(user_id: int, chat_id: int, display_name: str, day: int, month: int,
+                  added_by: int, year: int = None):
+    conn = db()
+    conn.execute(
+        "INSERT INTO birthdays (user_id, chat_id, display_name, day, month, year, "
+        "added_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, chat_id, display_name, day, month, year, added_by, now_kz().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_birthdays(chat_id: int):
+    conn = db()
+    rows = conn.execute(
+        "SELECT * FROM birthdays WHERE chat_id = ? ORDER BY month ASC, day ASC",
+        (chat_id,),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def get_birthday(birthday_id: int):
+    conn = db()
+    row = conn.execute("SELECT * FROM birthdays WHERE id = ?", (birthday_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def delete_birthday(birthday_id: int):
+    conn = db()
+    conn.execute("DELETE FROM birthdays WHERE id = ?", (birthday_id,))
+    conn.commit()
+    conn.close()
