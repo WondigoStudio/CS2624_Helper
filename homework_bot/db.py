@@ -156,6 +156,23 @@ def init_db():
         )
         """
     )
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS reminders (
+            id {id_pk},
+            chat_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            text TEXT NOT NULL,
+            repeat TEXT NOT NULL DEFAULT 'once',
+            weekday INTEGER,
+            remind_date TEXT,
+            time TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            last_sent_date TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
     existing_cols = _existing_columns(conn, "tasks")
     if "due_time" not in existing_cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN due_time TEXT")
@@ -179,7 +196,7 @@ def init_db():
         # an earlier version of this schema that used plain INTEGER —
         # modern Telegram user/chat ids commonly exceed the 32-bit range.
         # Safe/no-op if the column is already BIGINT.
-        for table in ("chats", "tasks", "schedule", "room_photos"):
+        for table in ("chats", "tasks", "schedule", "room_photos", "reminders"):
             conn.execute(f"ALTER TABLE {table} ALTER COLUMN chat_id TYPE BIGINT")
     conn.commit()
     conn.close()
@@ -453,3 +470,72 @@ def get_chat_info(chat_id: int):
     return row
 
 
+# --- Personal reminders ----------------------------------------------------
+# Unlike tasks/schedule (shared across everyone), each reminder belongs to
+# whoever created it (user_id) and fires in the chat it was created in
+# (chat_id) — a private chat for a reminder to yourself, or a group chat if
+# someone wants the whole group pinged.
+
+def add_reminder(chat_id: int, user_id: int, text: str, repeat: str, time_str: str,
+                  remind_date: str = None, weekday: int = None):
+    conn = db()
+    conn.execute(
+        "INSERT INTO reminders (chat_id, user_id, text, repeat, weekday, remind_date, "
+        "time, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (chat_id, user_id, text, repeat, weekday, remind_date, time_str, now_kz().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_reminders_for_user(user_id: int):
+    conn = db()
+    rows = conn.execute(
+        "SELECT * FROM reminders WHERE user_id = ? AND enabled = 1 "
+        "ORDER BY COALESCE(remind_date, '9999-99-99') ASC, time ASC",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_enabled_reminders():
+    conn = db()
+    rows = conn.execute("SELECT * FROM reminders WHERE enabled = 1").fetchall()
+    conn.close()
+    return rows
+
+
+def get_reminder(reminder_id: int):
+    conn = db()
+    row = conn.execute("SELECT * FROM reminders WHERE id = ?", (reminder_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def delete_reminder(reminder_id: int):
+    conn = db()
+    conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+    conn.commit()
+    conn.close()
+
+
+def disable_reminder(reminder_id: int):
+    """Used for a one-time reminder right after it fires — kept in the table
+    (rather than deleted) just long enough that a "snooze" tap on its button
+    can still look up its text, but it no longer shows in /reminders or
+    matches in the once-a-minute job check."""
+    conn = db()
+    conn.execute("UPDATE reminders SET enabled = 0 WHERE id = ?", (reminder_id,))
+    conn.commit()
+    conn.close()
+
+
+def mark_reminder_sent(reminder_id: int, date_iso: str):
+    """For a recurring (daily/weekly) reminder: records the calendar date it
+    last fired on, so the once-a-minute job doesn't send it again within the
+    same matching minute or on a restart that re-scans the same minute."""
+    conn = db()
+    conn.execute("UPDATE reminders SET last_sent_date = ? WHERE id = ?", (date_iso, reminder_id))
+    conn.commit()
+    conn.close()
