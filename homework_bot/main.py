@@ -33,6 +33,8 @@ from .config import (
 from .constants import ACTIONS
 from .db import init_db
 from .states import (
+    BDAY_DATE,
+    BDAY_TARGET,
     CHOOSING_SUBJECT,
     CHOOSING_TARGET_USER,
     EDIT_LESSON_FIELD,
@@ -166,6 +168,14 @@ from .handlers.reminders import (
     reminder_snooze_chosen,
     reminders_cmd,
 )
+from .handlers.birthdays import (
+    addbirthday_cancel,
+    addbirthday_date_typed,
+    addbirthday_start,
+    addbirthday_target_chosen,
+    birthday_delete_chosen,
+    birthdays_cmd,
+)
 
 from .jobs import (
     check_adaptive_schedule,
@@ -289,6 +299,15 @@ def main():
         fallbacks=[CommandHandler("cancel", remind_cancel)],
     )
 
+    addbirthday_conv = ConversationHandler(
+        entry_points=[CommandHandler("addbirthday", addbirthday_start)],
+        states={
+            BDAY_TARGET: [CallbackQueryHandler(addbirthday_target_chosen, pattern="^bdaytarget:")],
+            BDAY_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addbirthday_date_typed)],
+        },
+        fallbacks=[CommandHandler("cancel", addbirthday_cancel)],
+    )
+
     # ----------------------------------------------------
     # Основные хэндлеры бота
     # ----------------------------------------------------
@@ -303,6 +322,9 @@ def main():
     app.add_handler(CallbackQueryHandler(reminder_delete_chosen, pattern="^remdel:"))
     app.add_handler(CallbackQueryHandler(reminder_snooze_chosen, pattern="^remsnooze:"))
     app.add_handler(CallbackQueryHandler(reminder_confirm_chosen, pattern="^remconfirm:"))
+    app.add_handler(addbirthday_conv)
+    app.add_handler(CommandHandler("birthdays", birthdays_cmd))
+    app.add_handler(CallbackQueryHandler(birthday_delete_chosen, pattern="^bdaydel:"))
     app.add_handler(CommandHandler("today", today_cmd))
     app.add_handler(CommandHandler("week", week_cmd))
     app.add_handler(CommandHandler("all", all_cmd))
