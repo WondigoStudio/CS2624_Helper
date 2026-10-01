@@ -9,7 +9,7 @@ SUBJECTS = [
     ("psy", "Psychology"),
     ("soc", "Sociology"),
     ("dm", "Discrete Mathematics"),
-    ("flb2", "Foreign Language B2"),
+    ("flb2", "(English) Foreign Lang B2"),
     ("chn", "Китайский язык"),
     ("pe", "Физра"),
 ]
