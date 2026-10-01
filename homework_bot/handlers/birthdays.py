@@ -168,10 +168,10 @@ async def importbirthdays_cancel(update: Update, context: ContextTypes.DEFAULT_T
 _BIRTHDAY_FILTERS = [("7", "Неделя"), ("14", "2 недели"), ("30", "Месяц"), ("all", "Все")]
 
 
-def _sorted_birthdays(chat_id: int, days: int = None, today=None):
+def _sorted_birthdays(days: int = None, today=None):
     if today is None:
         today = today_kz()
-    rows = get_birthdays(chat_id)
+    rows = get_birthdays()
     rows = sorted(rows, key=lambda r: next_birthday_date(r["day"], r["month"], today))
     if days is not None:
         rows = [
@@ -206,7 +206,7 @@ def _birthdays_text(rows, active_key: str) -> str:
 
 async def birthdays_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
-    rows = _sorted_birthdays(update.effective_chat.id)
+    rows = _sorted_birthdays()
     await reply_text_chunked(
         update.message, _birthdays_text(rows, "all"),
         reply_markup=_birthdays_keyboard(rows, "all"),
@@ -218,7 +218,7 @@ async def birthday_filter_chosen(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     key = query.data.split(":", 1)[1]
     days = None if key == "all" else int(key)
-    rows = _sorted_birthdays(update.effective_chat.id, days=days)
+    rows = _sorted_birthdays(days=days)
     try:
         await query.edit_message_text(
             _birthdays_text(rows, key), reply_markup=_birthdays_keyboard(rows, key)
@@ -229,7 +229,7 @@ async def birthday_filter_chosen(update: Update, context: ContextTypes.DEFAULT_T
 
 async def nextbirthday_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
-    rows = _sorted_birthdays(update.effective_chat.id)
+    rows = _sorted_birthdays()
     if not rows:
         await update.message.reply_text(
             "Дни рождения пока не добавлены. Добавь через /addbirthday."
