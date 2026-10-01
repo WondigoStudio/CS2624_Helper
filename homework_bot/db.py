@@ -622,12 +622,12 @@ def add_birthday(user_id: int, chat_id: int, display_name: str, day: int, month:
     conn.close()
 
 
-def get_birthdays(chat_id: int):
+def get_birthdays():
+    """Birthdays are shared across everyone, like tasks — not scoped to the
+    chat they were added from (chat_id is kept only as a record of where
+    each one was added, e.g. for /addbirthday's "known users" picker)."""
     conn = db()
-    rows = conn.execute(
-        "SELECT * FROM birthdays WHERE chat_id = ? ORDER BY month ASC, day ASC",
-        (chat_id,),
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM birthdays ORDER BY month ASC, day ASC").fetchall()
     conn.close()
     return rows
 
