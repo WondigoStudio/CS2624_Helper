@@ -23,7 +23,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚠️ Список домашних заданий — общий для всех, кто пишет этому боту: "
         "если кто-то добавит задание, его увидят все, и наоборот.\n\n"
         "Предметы: ICT, ITP, Psychology, Sociology, Discrete Mathematics, "
-        "Foreign Language B2, Китайский язык, Физра.\n\n"
+        "(English) Foreign Lang B2, Китайский язык, Физра.\n\n"
         "Команды:\n"
         "/add — добавить задание\n"
         "/today — что сдавать сегодня\n"
