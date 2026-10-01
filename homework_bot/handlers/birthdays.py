@@ -188,11 +188,7 @@ def _birthdays_keyboard(rows, active_key: str) -> InlineKeyboardMarkup:
         )
         for key, label in _BIRTHDAY_FILTERS
     ]
-    buttons = [filter_row] + [
-        [InlineKeyboardButton(f"🗑 Удалить #{r['id']}", callback_data=f"bdaydel:{r['id']}")]
-        for r in rows
-    ]
-    return InlineKeyboardMarkup(buttons)
+    return InlineKeyboardMarkup([filter_row])
 
 
 def _birthdays_text(rows, active_key: str) -> str:
