@@ -6,8 +6,9 @@ from datetime import datetime, timedelta
 
 from telegram import Update
 
+from .ai_format import strip_html_preview
 from .constants import MONTH_NAMES_RU, SUBJECT_EMOJI, SUBJECT_NAME, WEEKDAY_NAMES_RU
-from .db import get_tasks
+from .db import get_task_attachments, get_tasks
 from .utils import is_task_overdue, next_birthday_date, today_kz
 
 
@@ -23,10 +24,14 @@ def format_task_line(row) -> str:
         tag = " ⏰ завтра"
     time_part = f" {row['due_time']}" if row["due_time"] else ""
     by_part = f" (добавил: {row['created_by']})" if row["created_by"] else ""
-    attach_part = " 📎" if row["attachment_file_id"] else ""
+    attachments = get_task_attachments(row["id"])
+    attach_part = f" 📎×{len(attachments)}" if attachments else ""
     line = f"#{row['id']} [{SUBJECT_NAME[row['subject']]}] {row['title']} — {d.strftime('%d.%m.%Y')}{time_part}{tag}{attach_part}{by_part}"
     if row["description"]:
-        line += f"\n    📝 {row['description']}"
+        # Always a plain-text preview here — this line is sent without
+        # parse_mode=HTML, so any <b>/<i> from an AI-structured description
+        # would otherwise show up as literal tags.
+        line += f"\n    📝 {strip_html_preview(row['description'])}"
     return line
 
 
