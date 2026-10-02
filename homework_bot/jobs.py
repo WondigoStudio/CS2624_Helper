@@ -22,6 +22,7 @@ from .db import (
     get_tasks,
     list_known_users,
     mark_reminder_fired,
+    mark_task_deadline_notified,
 )
 from .formatting import format_lessons_block, format_task_line
 from .states import LESSON_REMINDER_MINUTES
@@ -33,6 +34,7 @@ from .utils import (
     _chunk_text,
     _time_minus_minutes,
     now_kz,
+    task_due_datetime,
     today_kz,
 )
 
@@ -310,6 +312,40 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
             logger.warning("Could not nag reminder %s in chat %s: %s", row["id"], row["chat_id"], e)
             continue
         bump_reminder_nag(row["id"], now_iso)
+
+
+TASK_DEADLINE_LEAD_MINUTES = 60
+
+
+async def check_task_deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
+    """Runs every minute: for every undone task that has an exact due_time
+    set, fires a one-off "1 hour left" heads-up to every known chat (groups
+    and private chats alike) once its deadline comes within
+    TASK_DEADLINE_LEAD_MINUTES — using "<=" rather than "==" so a missed
+    exact minute (host spin-down, scheduler misfire) still catches it late
+    instead of silently skipping it, same reasoning as check_reminders.
+    deadline_notified guards against sending it more than once."""
+    now = now_kz()
+    rows = get_tasks(SHARED_TASKS_ID, only_undone=True)
+    for row in rows:
+        if row["deadline_notified"]:
+            continue
+        due_dt = task_due_datetime(row)
+        if due_dt is None:
+            continue
+        minutes_left = (due_dt - now).total_seconds() / 60
+        if not (0 <= minutes_left <= TASK_DEADLINE_LEAD_MINUTES):
+            continue
+        text = (
+            f"⏰ Через час дедлайн: [{SUBJECT_NAME[row['subject']]}] {row['title']} — "
+            f"{due_dt.strftime('%d.%m.%Y %H:%M')}"
+        )
+        for chat_id in all_chat_ids():
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+            except Exception as e:
+                logger.warning("Could not send deadline reminder to chat %s: %s", chat_id, e)
+        mark_task_deadline_notified(row["id"])
 
 
 async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
