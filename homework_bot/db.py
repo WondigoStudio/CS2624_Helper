@@ -7,13 +7,69 @@ from datetime import date
 
 from telegram import Update
 
-from .config import DATABASE_URL, DB_PATH, USE_POSTGRES, psycopg2
+from .config import (
+    DATABASE_URL,
+    DATABASE_URL_BACKUP2,
+    DATABASE_URL_BACKUP3,
+    DB_PATH,
+    USE_POSTGRES,
+    logger,
+    psycopg2,
+)
 from .utils import is_task_overdue, now_kz
+
+# --- Multi-database failover --------------------------------------------
+# Postgres only. _DB_URLS is the priority order: the primary (DATABASE_URL)
+# first, then whichever backups are configured. db() always tries the
+# currently "active" one first; if it can't connect, it tries the next one
+# down the list and — if that works — sticks with it as the new active DB
+# until something explicitly switches back (see get_db_status below: there
+# is no automatic switch-back, because data written during an outage lives
+# only on the failover DB and would need a conscious merge before it's safe
+# to call the original primary authoritative again).
+_DB_URLS = [u for u in (DATABASE_URL, DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3) if u]
+_active_db_index = 0
+
+
+def _connect_pg(url: str):
+    return psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor, connect_timeout=5)
+
+
+def _connect_with_failover():
+    global _active_db_index
+    last_err = None
+    for offset in range(len(_DB_URLS)):
+        idx = (_active_db_index + offset) % len(_DB_URLS)
+        try:
+            conn = _connect_pg(_DB_URLS[idx])
+        except Exception as e:
+            last_err = e
+            logger.warning("Database #%d unreachable, trying next: %s", idx, e)
+            continue
+        if idx != _active_db_index:
+            logger.error(
+                "Database failover: switched from #%d to #%d — check what took #%d down "
+                "and merge any data written here back before relying on it again.",
+                _active_db_index, idx, _active_db_index,
+            )
+            _active_db_index = idx
+        return conn
+    raise last_err
+
+
+def get_db_status() -> dict:
+    """For an admin /dbstatus command: which DB is currently active and how
+    many are configured as failover targets."""
+    return {
+        "using_postgres": USE_POSTGRES,
+        "configured_count": len(_DB_URLS),
+        "active_index": _active_db_index,
+    }
 
 
 def db():
     if USE_POSTGRES:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        conn = _connect_with_failover() if len(_DB_URLS) > 1 else _connect_pg(_DB_URLS[0])
         return _PGConn(conn)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -51,8 +107,15 @@ def _existing_columns(conn, table: str) -> set:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
-def init_db():
-    conn = db()
+def init_db(target_url: str = None):
+    """With target_url, creates/migrates the schema on that specific
+    Postgres database directly (bypassing the active/failover DB) — used to
+    make sure a backup database is ready to receive mirrored data before
+    the first backup job runs against it."""
+    if target_url is not None:
+        conn = _PGConn(_connect_pg(target_url))
+    else:
+        conn = db()
     id_pk = "SERIAL PRIMARY KEY" if USE_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     conn.execute(
         f"""
@@ -733,3 +796,47 @@ def delete_birthday(birthday_id: int):
     conn.execute("DELETE FROM birthdays WHERE id = ?", (birthday_id,))
     conn.commit()
     conn.close()
+
+
+# --- Multi-database backup (mirroring) ----------------------------------
+# Copies every row of every table from the currently active DB into one of
+# the configured backup DBs, overwriting whatever that backup already has.
+# Postgres-to-Postgres only. Called from jobs.py on a schedule (every 6h
+# into the first backup, once a night into the second) — never run this
+# against SQLite or against DATABASE_URL itself as the target.
+_MIRROR_TABLES = [
+    "tasks", "task_attachments", "chats", "schedule", "room_photos", "actions",
+    "schedule_allowed_users", "report_settings", "group_members", "report_chats",
+    "reminders", "birthdays",
+]
+
+
+def mirror_active_db_to(target_url: str) -> bool:
+    if not USE_POSTGRES or not target_url:
+        return False
+    src = _connect_pg(_DB_URLS[_active_db_index])
+    dst = _connect_pg(target_url)
+    try:
+        dst_cur = dst.cursor()
+        for table in _MIRROR_TABLES:
+            src_cur = src.cursor()
+            try:
+                src_cur.execute(f"SELECT * FROM {table}")
+            except Exception:
+                # table doesn't exist on the source (older schema) — skip it
+                continue
+            rows = src_cur.fetchall()
+            dst_cur.execute(f"DELETE FROM {table}")
+            if rows:
+                columns = list(rows[0].keys())
+                col_list = ", ".join(columns)
+                placeholders = ", ".join(["%s"] * len(columns))
+                values = [[r[c] for c in columns] for r in rows]
+                psycopg2.extras.execute_batch(
+                    dst_cur, f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})", values,
+                )
+        dst.commit()
+        return True
+    finally:
+        src.close()
+        dst.close()
