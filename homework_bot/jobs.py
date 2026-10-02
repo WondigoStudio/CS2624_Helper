@@ -1,6 +1,7 @@
 """Background jobs run on the PTB JobQueue: the adaptive morning
 schedule/task reminders, per-lesson heads-up pings, and the morning poll."""
 
+import asyncio
 import html
 import sqlite3
 from datetime import datetime, timedelta
@@ -9,7 +10,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from .config import SHARED_TASKS_ID, logger
+from .config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3, SHARED_TASKS_ID, logger
 from .constants import SUBJECT_NAME, WEEKDAY_NAMES_FULL_RU
 from .db import (
     all_chat_ids,
@@ -20,9 +21,11 @@ from .db import (
     get_reminders_awaiting_confirmation,
     get_room_photo,
     get_tasks,
+    init_db,
     list_known_users,
     mark_reminder_fired,
     mark_task_deadline_notified,
+    mirror_active_db_to,
 )
 from .formatting import format_lessons_block, format_task_line
 from .states import LESSON_REMINDER_MINUTES
@@ -312,6 +315,33 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
             logger.warning("Could not nag reminder %s in chat %s: %s", row["id"], row["chat_id"], e)
             continue
         bump_reminder_nag(row["id"], now_iso)
+
+
+async def backup_to_secondary(context: ContextTypes.DEFAULT_TYPE):
+    """Runs every 6 hours: mirrors the active database into the first
+    backup database (DATABASE_URL_BACKUP2). No-op if that env var isn't
+    set — failover/backups stay fully opt-in."""
+    if not DATABASE_URL_BACKUP2:
+        return
+    try:
+        await asyncio.to_thread(init_db, DATABASE_URL_BACKUP2)
+        ok = await asyncio.to_thread(mirror_active_db_to, DATABASE_URL_BACKUP2)
+        logger.info("Backup to secondary DB: %s", "ok" if ok else "skipped (not Postgres)")
+    except Exception as e:
+        logger.error("Backup to secondary DB failed: %s", e)
+
+
+async def backup_to_tertiary(context: ContextTypes.DEFAULT_TYPE):
+    """Runs once a night (see main.py's run_daily): mirrors the active
+    database into the second backup database (DATABASE_URL_BACKUP3)."""
+    if not DATABASE_URL_BACKUP3:
+        return
+    try:
+        await asyncio.to_thread(init_db, DATABASE_URL_BACKUP3)
+        ok = await asyncio.to_thread(mirror_active_db_to, DATABASE_URL_BACKUP3)
+        logger.info("Backup to tertiary DB: %s", "ok" if ok else "skipped (not Postgres)")
+    except Exception as e:
+        logger.error("Backup to tertiary DB failed: %s", e)
 
 
 TASK_DEADLINE_LEAD_MINUTES = 60
