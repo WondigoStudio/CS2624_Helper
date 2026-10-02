@@ -76,9 +76,9 @@ from .states import (
 from .handlers.start import start
 from .handlers.tasks import (
     add_attachment_document,
+    add_attachment_done,
     add_attachment_invalid,
     add_attachment_photo,
-    add_attachment_skip,
     add_cancel,
     add_date_typed,
     add_description_skip,
@@ -95,6 +95,7 @@ from .handlers.tasks import (
     done_cmd,
     edittask_attachment_clear,
     edittask_attachment_document,
+    edittask_attachment_done,
     edittask_attachment_invalid,
     edittask_attachment_photo,
     edittask_date_typed,
@@ -188,6 +189,7 @@ from .jobs import (
     check_adaptive_tasks,
     check_lesson_reminders,
     check_reminders,
+    check_task_deadline_reminders,
     send_morning_poll_job,
 )
 
@@ -217,7 +219,7 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_time_typed),
             ],
             TYPING_ATTACHMENT: [
-                CallbackQueryHandler(add_attachment_skip, pattern="^noattach$"),
+                CallbackQueryHandler(add_attachment_done, pattern="^attachdone$"),
                 MessageHandler(filters.PHOTO, add_attachment_photo),
                 MessageHandler(filters.Document.IMAGE | filters.Document.PDF, add_attachment_document),
                 MessageHandler(~filters.COMMAND, add_attachment_invalid),
@@ -269,7 +271,8 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_description_typed),
             ],
             EDIT_TASK_ATTACHMENT: [
-                CallbackQueryHandler(edittask_attachment_clear, pattern="^edittaskattach:none$"),
+                CallbackQueryHandler(edittask_attachment_clear, pattern="^edittaskattach:clear$"),
+                CallbackQueryHandler(edittask_attachment_done, pattern="^edittaskattach:done$"),
                 MessageHandler(filters.PHOTO, edittask_attachment_photo),
                 MessageHandler(filters.Document.IMAGE | filters.Document.PDF, edittask_attachment_document),
                 MessageHandler(~filters.COMMAND, edittask_attachment_invalid),
@@ -456,6 +459,7 @@ def main():
     )
     app.job_queue.run_repeating(check_lesson_reminders, interval=60, first=25)
     app.job_queue.run_repeating(check_reminders, interval=60, first=35)
+    app.job_queue.run_repeating(check_task_deadline_reminders, interval=60, first=45)
 
     logger.info("Bot starting (polling)...")
     app.run_polling()
