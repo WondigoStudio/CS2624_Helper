@@ -150,7 +150,7 @@ from .handlers.roomphotos import (
     testphoto_cmd,
 )
 from .handlers.calendar import calendar_cmd, calendar_day_tap, calendar_nav, calendar_noop
-from .handlers.admin import testmorning_cmd, users_cmd, viewschedule_chosen, viewschedule_cmd
+from .handlers.admin import dbstatus_cmd, testmorning_cmd, users_cmd, viewschedule_chosen, viewschedule_cmd
 from .handlers.social import call_cmd, set_report_cmd, topactions_cmd, track_group_members
 from .handlers.transcribe import handle_transcribe
 from .handlers.translate import handle_translate_reply, inline_translate
@@ -185,6 +185,8 @@ from .handlers.birthdays import (
 )
 
 from .jobs import (
+    backup_to_secondary,
+    backup_to_tertiary,
     check_adaptive_schedule,
     check_adaptive_tasks,
     check_lesson_reminders,
@@ -367,6 +369,7 @@ def main():
     app.add_handler(CallbackQueryHandler(schedule_delete_chosen, pattern="^schdel:"))
     app.add_handler(CommandHandler("roomphotos", roomphotos_cmd))
     app.add_handler(CommandHandler("users", users_cmd))
+    app.add_handler(CommandHandler("dbstatus", dbstatus_cmd))
     app.add_handler(CommandHandler("viewschedule", viewschedule_cmd))
     app.add_handler(CallbackQueryHandler(viewschedule_chosen, pattern="^viewsch:"))
     app.add_handler(CommandHandler("testphoto", testphoto_cmd))
@@ -460,6 +463,11 @@ def main():
     app.job_queue.run_repeating(check_lesson_reminders, interval=60, first=25)
     app.job_queue.run_repeating(check_reminders, interval=60, first=35)
     app.job_queue.run_repeating(check_task_deadline_reminders, interval=60, first=45)
+    # Multi-database backup (no-op unless DATABASE_URL_BACKUP2/3 are set —
+    # see config.py). Every 6 hours into the first backup, once a night
+    # (00:00 Almaty time) into the second.
+    app.job_queue.run_repeating(backup_to_secondary, interval=6 * 3600, first=300)
+    app.job_queue.run_daily(backup_to_tertiary, time=dtime(hour=0, minute=0, tzinfo=TIMEZONE))
 
     logger.info("Bot starting (polling)...")
     app.run_polling()
