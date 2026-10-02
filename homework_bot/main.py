@@ -150,7 +150,7 @@ from .handlers.roomphotos import (
     testphoto_cmd,
 )
 from .handlers.calendar import calendar_cmd, calendar_day_tap, calendar_nav, calendar_noop
-from .handlers.admin import dbstatus_cmd, testmorning_cmd, users_cmd, viewschedule_chosen, viewschedule_cmd
+from .handlers.admin import backupnow_cmd, dbstatus_cmd, testmorning_cmd, users_cmd, viewschedule_chosen, viewschedule_cmd
 from .handlers.social import call_cmd, set_report_cmd, topactions_cmd, track_group_members
 from .handlers.transcribe import handle_transcribe
 from .handlers.translate import handle_translate_reply, inline_translate
@@ -370,6 +370,7 @@ def main():
     app.add_handler(CommandHandler("roomphotos", roomphotos_cmd))
     app.add_handler(CommandHandler("users", users_cmd))
     app.add_handler(CommandHandler("dbstatus", dbstatus_cmd))
+    app.add_handler(CommandHandler("backupnow", backupnow_cmd))
     app.add_handler(CommandHandler("viewschedule", viewschedule_cmd))
     app.add_handler(CallbackQueryHandler(viewschedule_chosen, pattern="^viewsch:"))
     app.add_handler(CommandHandler("testphoto", testphoto_cmd))
