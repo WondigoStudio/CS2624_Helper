@@ -1,21 +1,27 @@
 """Homework-task commands: add/today/week/all/done/delete, the /edittask
 conversation, and re-sending a task's attachment (/taskfile)."""
 
+import html
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, ConversationHandler
 
+from ..ai_format import maybe_structure_description, strip_html_preview
 from ..config import SHARED_TASKS_ID
 from ..constants import SUBJECT_NAME
 from ..db import (
     add_task,
+    add_task_attachment,
+    clear_task_attachments,
     delete_task,
     get_task,
+    get_task_attachments,
     get_tasks,
     mark_done,
     register_chat,
-    update_task_attachment,
+    update_task_description,
     update_task_field,
 )
 from ..formatting import _overdue_block, user_short_name
@@ -80,7 +86,18 @@ async def add_title_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def add_description_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["new_description"] = update.message.text.strip()
+    raw = update.message.text.strip()
+    status = None
+    if len(raw) >= 220:
+        status = await update.message.reply_text("✨ Структурирую описание…")
+    text, is_html = await maybe_structure_description(raw)
+    context.user_data["new_description"] = text
+    context.user_data["new_description_html"] = is_html
+    if status:
+        try:
+            await status.delete()
+        except Exception:
+            pass
     await update.message.reply_text(
         "Когда сдавать? Напиши дату в формате ДД.ММ или ДД.ММ.ГГГГ, "
         "либо просто «сегодня» / «завтра»."
@@ -92,6 +109,7 @@ async def add_description_skip(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     context.user_data["new_description"] = None
+    context.user_data["new_description_html"] = False
     await query.edit_message_text(
         "Когда сдавать? Напиши дату в формате ДД.ММ или ДД.ММ.ГГГГ, "
         "либо просто «сегодня» / «завтра»."
@@ -119,36 +137,40 @@ async def add_date_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return TYPING_TIME
 
 
+def _attachment_done_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Готово", callback_data="attachdone")]])
+
+
 async def _prompt_for_attachment(target_message):
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Без вложения", callback_data="noattach")]
-    ])
     await target_message(
-        "Прикрепи фото или файл к заданию (скан условия, фото с доски и т.п.), "
-        "или нажми кнопку, если вложение не нужно.",
-        reply_markup=keyboard,
+        "Прикрепи фото или файлы к заданию (скан условия, фото с доски и т.п.) — "
+        "можно несколько, присылай по одному. Когда закончишь (или если вложения "
+        "не нужны), нажми «Готово».",
+        reply_markup=_attachment_done_keyboard(),
     )
 
 
 async def _finish_add_task(
-    context: ContextTypes.DEFAULT_TYPE, chat_id: int,
-    attachment_file_id: str = None, attachment_kind: str = None,
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, attachments: list = None,
 ):
+    attachments = attachments or []
     subject = context.user_data.pop("new_subject")
     title = context.user_data.pop("new_title")
     description = context.user_data.pop("new_description", None)
+    description_html = context.user_data.pop("new_description_html", False)
     due_date_iso = context.user_data.pop("new_date")
     due_time = context.user_data.pop("new_time", "")
     creator_name = context.user_data.pop("new_creator", None)
-    add_task(
+    task_id = add_task(
         chat_id, subject, title, due_date_iso, due_time or None,
-        created_by=creator_name, description=description,
-        attachment_file_id=attachment_file_id, attachment_kind=attachment_kind,
+        created_by=creator_name, description=description, description_html=description_html,
     )
+    for file_id, kind in attachments:
+        add_task_attachment(task_id, file_id, kind)
     d = datetime.strptime(due_date_iso, "%Y-%m-%d").date()
     time_part = f", {due_time}" if due_time else ""
-    desc_part = f"\n📝 {description}" if description else ""
-    attach_part = "\n📎 вложение сохранено" if attachment_file_id else ""
+    desc_part = f"\n📝 {strip_html_preview(description)}" if description else ""
+    attach_part = f"\n📎 вложений: {len(attachments)}" if attachments else ""
     return f"Готово ✅\n[{SUBJECT_NAME[subject]}] {title} — {d.strftime('%d.%m.%Y')}{time_part}{desc_part}{attach_part}"
 async def add_time_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = parse_due_time(update.message.text)
@@ -176,22 +198,31 @@ async def add_time_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_attachment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_id = update.message.photo[-1].file_id
-    text = await _finish_add_task(context, SHARED_TASKS_ID, file_id, "photo")
-    await update.message.reply_text(text)
-    return ConversationHandler.END
+    attachments = context.user_data.setdefault("new_attachments", [])
+    attachments.append((file_id, "photo"))
+    await update.message.reply_text(
+        f"📎 Добавлено ({len(attachments)}). Пришли ещё или нажми «Готово».",
+        reply_markup=_attachment_done_keyboard(),
+    )
+    return TYPING_ATTACHMENT
 
 
 async def add_attachment_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    text = await _finish_add_task(context, SHARED_TASKS_ID, doc.file_id, "document")
-    await update.message.reply_text(text)
-    return ConversationHandler.END
+    attachments = context.user_data.setdefault("new_attachments", [])
+    attachments.append((doc.file_id, "document"))
+    await update.message.reply_text(
+        f"📎 Добавлено ({len(attachments)}). Пришли ещё или нажми «Готово».",
+        reply_markup=_attachment_done_keyboard(),
+    )
+    return TYPING_ATTACHMENT
 
 
-async def add_attachment_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_attachment_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    text = await _finish_add_task(context, SHARED_TASKS_ID)
+    attachments = context.user_data.pop("new_attachments", [])
+    text = await _finish_add_task(context, SHARED_TASKS_ID, attachments)
     await query.edit_message_text(text)
     return ConversationHandler.END
 
@@ -311,7 +342,7 @@ async def taskfile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lets anyone re-send the attachment of a task that has one, without
     scrolling back to find the original message."""
     register_chat(update)
-    rows = [r for r in get_tasks(SHARED_TASKS_ID, only_undone=False) if r["attachment_file_id"]]
+    rows = [r for r in get_tasks(SHARED_TASKS_ID, only_undone=False) if get_task_attachments(r["id"])]
     if not rows:
         await update.message.reply_text("Ни у одного задания пока нет вложения.")
         return
@@ -332,14 +363,17 @@ async def taskfile_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     task_id = int(query.data.split(":")[1])
     task = get_task(task_id)
-    if not task or not task["attachment_file_id"]:
+    attachments = get_task_attachments(task_id) if task else []
+    if not task or not attachments:
         await query.message.reply_text("Вложение не найдено.")
         return
     caption = f"[{SUBJECT_NAME[task['subject']]}] {task['title']}"
-    if task["attachment_kind"] == "document":
-        await query.message.reply_document(document=task["attachment_file_id"], caption=caption)
-    else:
-        await query.message.reply_photo(photo=task["attachment_file_id"], caption=caption)
+    for i, att in enumerate(attachments):
+        att_caption = caption if i == 0 else None
+        if att["kind"] == "document":
+            await query.message.reply_document(document=att["file_id"], caption=att_caption)
+        else:
+            await query.message.reply_photo(photo=att["file_id"], caption=att_caption)
 
 
 async def edittask_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -411,11 +445,15 @@ async def edittask_field_chosen(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return EDIT_TASK_DESCRIPTION
     if field == "attachment":
+        task_id = context.user_data["edit_task_id"]
+        current_count = len(get_task_attachments(task_id))
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Убрать вложение", callback_data="edittaskattach:none")]
+            [InlineKeyboardButton("🗑 Убрать все вложения", callback_data="edittaskattach:clear")],
+            [InlineKeyboardButton("✅ Готово", callback_data="edittaskattach:done")],
         ])
         await query.edit_message_text(
-            "Пришли новое фото/файл вложения, или нажми кнопку, чтобы убрать его:",
+            f"Сейчас вложений: {current_count}. Пришли фото/файлы, чтобы добавить ещё "
+            "(можно несколько по очереди), либо выбери действие ниже:",
             reply_markup=keyboard,
         )
         return EDIT_TASK_ATTACHMENT
@@ -478,8 +516,17 @@ async def edittask_time_skip(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def edittask_description_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task_id = context.user_data.pop("edit_task_id")
-    new_description = update.message.text.strip()
-    update_task_field(task_id, "description", new_description)
+    raw = update.message.text.strip()
+    status = None
+    if len(raw) >= 220:
+        status = await update.message.reply_text("✨ Структурирую описание…")
+    text, is_html = await maybe_structure_description(raw)
+    update_task_description(task_id, text, description_html=is_html)
+    if status:
+        try:
+            await status.delete()
+        except Exception:
+            pass
     await update.message.reply_text("Готово ✅ Описание обновлено.")
     return ConversationHandler.END
 
@@ -494,34 +541,56 @@ async def edittask_description_clear(update: Update, context: ContextTypes.DEFAU
 
 
 async def edittask_attachment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    task_id = context.user_data.pop("edit_task_id")
+    task_id = context.user_data["edit_task_id"]
     file_id = update.message.photo[-1].file_id
-    update_task_attachment(task_id, file_id, "photo")
-    await update.message.reply_text("Готово ✅ Вложение обновлено.")
-    return ConversationHandler.END
+    add_task_attachment(task_id, file_id, "photo")
+    count = len(get_task_attachments(task_id))
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Убрать все вложения", callback_data="edittaskattach:clear")],
+        [InlineKeyboardButton("✅ Готово", callback_data="edittaskattach:done")],
+    ])
+    await update.message.reply_text(f"📎 Добавлено (всего {count}).", reply_markup=keyboard)
+    return EDIT_TASK_ATTACHMENT
 
 
 async def edittask_attachment_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    task_id = context.user_data.pop("edit_task_id")
+    task_id = context.user_data["edit_task_id"]
     doc = update.message.document
-    update_task_attachment(task_id, doc.file_id, "document")
-    await update.message.reply_text("Готово ✅ Вложение обновлено.")
-    return ConversationHandler.END
+    add_task_attachment(task_id, doc.file_id, "document")
+    count = len(get_task_attachments(task_id))
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Убрать все вложения", callback_data="edittaskattach:clear")],
+        [InlineKeyboardButton("✅ Готово", callback_data="edittaskattach:done")],
+    ])
+    await update.message.reply_text(f"📎 Добавлено (всего {count}).", reply_markup=keyboard)
+    return EDIT_TASK_ATTACHMENT
 
 
 async def edittask_attachment_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    task_id = context.user_data["edit_task_id"]
+    clear_task_attachments(task_id)
+    await query.edit_message_text(
+        "Все вложения убраны. Можешь прислать новые или нажать «Готово».",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Готово", callback_data="edittaskattach:done")]]),
+    )
+    return EDIT_TASK_ATTACHMENT
+
+
+async def edittask_attachment_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     task_id = context.user_data.pop("edit_task_id")
-    update_task_attachment(task_id, None, None)
-    await query.edit_message_text("Готово ✅ Вложение убрано.")
+    count = len(get_task_attachments(task_id))
+    await query.edit_message_text(f"Готово ✅ Вложений сохранено: {count}.")
     return ConversationHandler.END
 
 
 async def edittask_attachment_invalid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Это не похоже на фото или файл. Пришли картинку/документ, или нажми "
-        "«Убрать вложение»."
+        "Это не похоже на фото или файл. Пришли картинку/документ, или воспользуйся "
+        "кнопками выше."
     )
     return EDIT_TASK_ATTACHMENT
 
@@ -534,6 +603,12 @@ async def taskdesc_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not task or not task["description"]:
         await query.message.reply_text("Описания нет.")
         return
-    await query.message.reply_text(
-        f"📝 [{SUBJECT_NAME[task['subject']]}] {task['title']}:\n\n{task['description']}"
-    )
+    if task["description_html"]:
+        header = f"📝 [{html.escape(SUBJECT_NAME[task['subject']])}] {html.escape(task['title'])}:\n\n"
+        await query.message.reply_text(
+            header + task["description"], parse_mode=ParseMode.HTML
+        )
+    else:
+        await query.message.reply_text(
+            f"📝 [{SUBJECT_NAME[task['subject']]}] {task['title']}:\n\n{task['description']}"
+        )
