@@ -60,6 +60,17 @@ if USE_POSTGRES and psycopg2 is None:
         "DATABASE_URL is set but psycopg2 isn't installed. "
         "Run: pip install -r requirements.txt"
     )
+# Optional failover databases (Postgres only — e.g. two more free instances
+# from Neon/Supabase/ElephantSQL). If set, the bot writes/reads DATABASE_URL
+# as usual, but automatically switches to DATABASE_URL_BACKUP2 then
+# DATABASE_URL_BACKUP3 if the current one stops responding, and a scheduled
+# job mirrors all data from the active DB into them on a schedule (every 6h
+# into #2, once a night into #3) — see db.py's "Multi-database failover"
+# section and jobs.py's backup_to_secondary/backup_to_tertiary. Leaving
+# these unset disables failover entirely; everything behaves exactly as
+# before.
+DATABASE_URL_BACKUP2 = os.environ.get("DATABASE_URL_BACKUP2", "").strip()
+DATABASE_URL_BACKUP3 = os.environ.get("DATABASE_URL_BACKUP3", "").strip()
 TIMEZONE = ZoneInfo("Asia/Almaty")
 REMINDER_HOUR = 8
 REMINDER_MINUTE = 0
