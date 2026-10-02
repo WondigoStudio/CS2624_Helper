@@ -175,6 +175,17 @@ def init_db():
     )
     conn.execute(
         f"""
+        CREATE TABLE IF NOT EXISTS task_attachments (
+            id {id_pk},
+            task_id INTEGER NOT NULL,
+            file_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        f"""
         CREATE TABLE IF NOT EXISTS birthdays (
             id {id_pk},
             user_id BIGINT NOT NULL,
@@ -199,6 +210,29 @@ def init_db():
         conn.execute("ALTER TABLE tasks ADD COLUMN attachment_file_id TEXT")
     if "attachment_kind" not in existing_cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN attachment_kind TEXT")
+    if "description_html" not in existing_cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN description_html INTEGER NOT NULL DEFAULT 0")
+    if "deadline_notified" not in existing_cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN deadline_notified INTEGER NOT NULL DEFAULT 0")
+    # One-time migration: fold each task's old single attachment_file_id
+    # (from before multiple attachments were supported) into the new
+    # task_attachments table, so nothing already saved gets lost. Guarded by
+    # an existence check so it's a no-op on every later startup.
+    for old in conn.execute(
+        "SELECT id, attachment_file_id, attachment_kind, created_at FROM tasks "
+        "WHERE attachment_file_id IS NOT NULL"
+    ).fetchall():
+        already = conn.execute(
+            "SELECT 1 FROM task_attachments WHERE task_id = ?", (old["id"],)
+        ).fetchone()
+        if already:
+            continue
+        conn.execute(
+            "INSERT INTO task_attachments (task_id, file_id, kind, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (old["id"], old["attachment_file_id"], old["attachment_kind"] or "photo",
+             old["created_at"]),
+        )
     reminder_cols = _existing_columns(conn, "reminders")
     if "awaiting_confirmation" not in reminder_cols:
         conn.execute("ALTER TABLE reminders ADD COLUMN awaiting_confirmation INTEGER NOT NULL DEFAULT 0")
@@ -247,15 +281,30 @@ def register_chat(update: Update):
 
 
 def add_task(chat_id: int, subject: str, title: str, due_date: str, due_time: str = None,
-             created_by: str = None, description: str = None,
-             attachment_file_id: str = None, attachment_kind: str = None):
+             created_by: str = None, description: str = None, description_html: bool = False) -> int:
+    """Returns the new task's id, so the caller can attach files to it via
+    add_task_attachment right after creation (see 'Task attachments'
+    below — a task can now have any number of attachments, not just one)."""
+    conn = db()
+    cur = conn.execute(
+        "INSERT INTO tasks (chat_id, subject, title, due_date, due_time, created_at, "
+        "created_by, description, description_html) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        (chat_id, subject, title, due_date, due_time, now_kz().isoformat(),
+         created_by, description, 1 if description_html else 0),
+    )
+    row = cur.fetchone()
+    task_id = row["id"] if row else None
+    conn.commit()
+    conn.close()
+    return task_id
+
+
+def update_task_description(task_id: int, description: str, description_html: bool = False):
     conn = db()
     conn.execute(
-        "INSERT INTO tasks (chat_id, subject, title, due_date, due_time, created_at, "
-        "created_by, description, attachment_file_id, attachment_kind) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (chat_id, subject, title, due_date, due_time, now_kz().isoformat(),
-         created_by, description, attachment_file_id, attachment_kind),
+        "UPDATE tasks SET description = ?, description_html = ? WHERE id = ?",
+        (description, 1 if description_html else 0, task_id),
     )
     conn.commit()
     conn.close()
@@ -311,6 +360,46 @@ def update_task_attachment(task_id: int, file_id, kind):
         "UPDATE tasks SET attachment_file_id = ?, attachment_kind = ? WHERE id = ?",
         (file_id, kind, task_id),
     )
+    conn.commit()
+    conn.close()
+
+
+# --- Task attachments ---------------------------------------------------
+# A task can have any number of attachments (photos/files), added one at a
+# time via /add or /edittask. The old single attachment_file_id/kind columns
+# on `tasks` are kept only so existing rows aren't broken — init_db() folds
+# any of those into this table on startup (see the migration above) and
+# nothing new is written there.
+
+def add_task_attachment(task_id: int, file_id: str, kind: str):
+    conn = db()
+    conn.execute(
+        "INSERT INTO task_attachments (task_id, file_id, kind, created_at) VALUES (?, ?, ?, ?)",
+        (task_id, file_id, kind, now_kz().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_task_attachments(task_id: int):
+    conn = db()
+    rows = conn.execute(
+        "SELECT * FROM task_attachments WHERE task_id = ? ORDER BY id ASC", (task_id,)
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def clear_task_attachments(task_id: int):
+    conn = db()
+    conn.execute("DELETE FROM task_attachments WHERE task_id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+
+
+def mark_task_deadline_notified(task_id: int):
+    conn = db()
+    conn.execute("UPDATE tasks SET deadline_notified = 1 WHERE id = ?", (task_id,))
     conn.commit()
     conn.close()
 
