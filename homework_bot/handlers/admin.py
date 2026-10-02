@@ -1,6 +1,8 @@
-"""Admin-only diagnostic commands: /users, /viewschedule, and /testmorning
-(fires the adaptive morning schedule send immediately, for testing)."""
+"""Admin-only diagnostic commands: /users, /viewschedule, /testmorning
+(fires the adaptive morning schedule send immediately, for testing),
+/dbstatus and /backupnow (multi-database failover status/control)."""
 
+import asyncio
 import html
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -9,11 +11,54 @@ from telegram.ext import ContextTypes
 
 from ..config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3
 from ..constants import WEEKDAY_EMOJI, WEEKDAY_NAMES_FULL_RU
-from ..db import display_name, get_chat_info, get_db_status, get_lessons, list_known_users, register_chat
+from ..db import (
+    display_name,
+    get_chat_info,
+    get_db_status,
+    get_lessons,
+    init_db,
+    list_known_users,
+    mirror_active_db_to,
+    register_chat,
+)
 from ..formatting import format_lessons_block
 from ..jobs import send_morning_schedule_for_chat
 from ..permissions import is_admin
 from ..utils import now_kz
+
+
+async def backupnow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Runs the mirror-to-backup-DB(s) immediately instead of waiting for
+    the scheduled job — mainly useful right after setting up
+    DATABASE_URL_BACKUP2/3 for the first time, to seed them with the
+    existing data straight away rather than waiting up to 6h/overnight."""
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text(
+            "Эта команда доступна только администраторам бота."
+        )
+        return
+    status = get_db_status()
+    if not status["using_postgres"]:
+        await update.message.reply_text("База — локальный SQLite-файл, переносить некуда.")
+        return
+    targets = [("резервную №2", DATABASE_URL_BACKUP2), ("резервную №3", DATABASE_URL_BACKUP3)]
+    targets = [(label, url) for label, url in targets if url]
+    if not targets:
+        await update.message.reply_text(
+            "DATABASE_URL_BACKUP2/3 не заданы — нечего заполнять."
+        )
+        return
+    status_msg = await update.message.reply_text("⏳ Переношу данные…")
+    results = []
+    for label, url in targets:
+        try:
+            await asyncio.to_thread(init_db, url)
+            ok = await asyncio.to_thread(mirror_active_db_to, url)
+            results.append(f"✅ {label} — готово" if ok else f"⚠️ {label} — пропущено")
+        except Exception as e:
+            results.append(f"❌ {label} — ошибка: {e}")
+    await status_msg.edit_text("\n".join(results))
 
 
 async def dbstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
