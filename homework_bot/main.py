@@ -223,7 +223,7 @@ def main():
             TYPING_ATTACHMENT: [
                 CallbackQueryHandler(add_attachment_done, pattern="^attachdone$"),
                 MessageHandler(filters.PHOTO, add_attachment_photo),
-                MessageHandler(filters.Document.IMAGE | filters.Document.PDF, add_attachment_document),
+                MessageHandler(filters.Document.ALL, add_attachment_document),
                 MessageHandler(~filters.COMMAND, add_attachment_invalid),
             ],
         },
@@ -276,7 +276,7 @@ def main():
                 CallbackQueryHandler(edittask_attachment_clear, pattern="^edittaskattach:clear$"),
                 CallbackQueryHandler(edittask_attachment_done, pattern="^edittaskattach:done$"),
                 MessageHandler(filters.PHOTO, edittask_attachment_photo),
-                MessageHandler(filters.Document.IMAGE | filters.Document.PDF, edittask_attachment_document),
+                MessageHandler(filters.Document.ALL, edittask_attachment_document),
                 MessageHandler(~filters.COMMAND, edittask_attachment_invalid),
             ],
         },
