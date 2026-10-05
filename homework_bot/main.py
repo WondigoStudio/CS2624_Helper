@@ -7,6 +7,8 @@ Run with:  python -m homework_bot.main
 
 from datetime import time as dtime
 
+from telegram import MenuButtonWebApp, WebAppInfo
+
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -26,6 +28,7 @@ from .config import (
     TIMEZONE,
     TRANSCRIBE_ENABLED,
     TRANSLATE_ENABLED,
+    WEBAPP_URL,
     logger,
     requests,
     start_health_check_server,
@@ -73,7 +76,7 @@ from .states import (
     TYPING_TITLE,
 )
 
-from .handlers.start import start
+from .handlers.start import app_cmd, start
 from .handlers.tasks import (
     add_attachment_document,
     add_attachment_done,
@@ -204,7 +207,20 @@ def main():
         )
     init_db()
     start_health_check_server()
-    app = Application.builder().token(BOT_TOKEN).build()
+    async def _post_init(application):
+        # Puts an "Открыть" button next to the message box in private chats
+        # that launches the Mini App. Failure here must never stop the bot.
+        if not WEBAPP_URL:
+            return
+        try:
+            await application.bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="Открыть", web_app=WebAppInfo(url=WEBAPP_URL))
+            )
+            logger.info("Mini App menu button set to %s", WEBAPP_URL)
+        except Exception as e:
+            logger.warning("Could not set Mini App menu button: %s", e)
+
+    app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
 
     add_conv = ConversationHandler(
         entry_points=[CommandHandler("add", add_start)],
@@ -331,6 +347,7 @@ def main():
     # Основные хэндлеры бота
     # ----------------------------------------------------
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("app", app_cmd))
     app.add_handler(add_conv)
     app.add_handler(schedule_add_conv)
     app.add_handler(addroomphoto_conv)
