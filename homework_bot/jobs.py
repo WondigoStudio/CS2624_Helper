@@ -26,6 +26,8 @@ from .db import (
     mark_reminder_fired,
     mark_task_deadline_notified,
     mirror_active_db_to,
+    users_who_finished,
+    viewer_for_chat,
 )
 from .formatting import format_lessons_block, format_task_line
 from .states import LESSON_REMINDER_MINUTES
@@ -184,8 +186,19 @@ async def check_adaptive_tasks(context: ContextTypes.DEFAULT_TYPE):
         target = _adaptive_target_time(chat_id, row["chat_type"], TASKS_OFFSET_MINUTES, DEFAULT_TASKS_TIME)
         if target != now_str:
             continue
+        # Personal "done" marks: in a private chat leave out what this person
+        # already finished (groups have no single person, so see everything
+        # that isn't finished globally).
+        chat_rows = get_tasks(
+            SHARED_TASKS_ID, start=today_iso, end=tomorrow_iso, viewer_id=viewer_for_chat(chat_id)
+        )
+        if not chat_rows:
+            continue
+        chat_text = "🔔 Напоминание (общий список заданий):\n" + "\n".join(
+            format_task_line(r) for r in chat_rows
+        )
         try:
-            for chunk in _chunk_text(text):
+            for chunk in _chunk_text(chat_text):
                 await context.bot.send_message(chat_id=chat_id, text=chunk)
         except Exception as e:
             logger.warning("Could not message chat %s: %s", chat_id, e)
@@ -370,7 +383,10 @@ async def check_task_deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
             f"⏰ Через час дедлайн: [{SUBJECT_NAME[row['subject']]}] {row['title']} — "
             f"{due_dt.strftime('%d.%m.%Y %H:%M')}"
         )
+        finished = users_who_finished(row["id"])
         for chat_id in all_chat_ids():
+            if chat_id in finished:
+                continue  # this person already marked it done — no need to nag
             try:
                 await context.bot.send_message(chat_id=chat_id, text=text)
             except Exception as e:
