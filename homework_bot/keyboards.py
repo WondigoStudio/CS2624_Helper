@@ -79,9 +79,9 @@ def _edit_lesson_field_keyboard():
     ])
 
 
-def calendar_keyboard(chat_id: int, year: int, month: int) -> InlineKeyboardMarkup:
-    busy_days = get_task_dates_in_month(chat_id, year, month)
-    overdue_days = get_overdue_task_dates_in_month(chat_id, year, month)
+def calendar_keyboard(chat_id: int, year: int, month: int, viewer_id=None) -> InlineKeyboardMarkup:
+    busy_days = get_task_dates_in_month(chat_id, year, month, viewer_id)
+    overdue_days = get_overdue_task_dates_in_month(chat_id, year, month, viewer_id)
     today = today_kz()
 
     rows = [
