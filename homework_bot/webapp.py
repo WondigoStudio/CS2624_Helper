@@ -9,29 +9,65 @@ Auth: every API call carries Telegram's signed `initData` string. It is
 verified here with an HMAC keyed by the bot token, per
 https://core.telegram.org/bots/webapps#validating-data-received-via-a-web-app
 — so nobody can call the API as someone else, and no separate login exists.
+
+Permissions mirror the chat commands: managing tasks/schedule needs
+is_schedule_allowed (same as /add, /done, /edittask, /schedule_add);
+birthdays are open to everyone (same as /addbirthday), and deleting one
+needs being whoever added it or an admin.
 """
 
+import calendar
 import hashlib
 import hmac
 import html
 import json
 import re
 import time
+from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qsl
 
-from .config import BOT_TOKEN, SHARED_TASKS_ID, logger
-from .constants import SUBJECT_EMOJI, SUBJECT_NAME
-from .db import get_birthdays, get_lessons, get_task, get_task_attachments, get_tasks, mark_done
-from .permissions import is_schedule_allowed
-from .utils import is_task_overdue, next_birthday_date, now_kz, today_kz
+from .ai_format import STRUCTURE_MIN_LENGTH, _sanitize_telegram_html, _structure_with_groq
+from .config import BOT_TOKEN, GROQ_API_KEY, SHARED_TASKS_ID, logger, requests
+from .constants import SUBJECT_EMOJI, SUBJECT_NAME, SUBJECTS
+from .db import (
+    add_birthday,
+    add_lesson,
+    add_task,
+    delete_birthday,
+    delete_lesson,
+    delete_task,
+    get_birthday,
+    get_birthdays,
+    get_db_status,
+    get_lesson,
+    get_lessons,
+    get_task,
+    get_task_attachments,
+    get_tasks,
+    mark_done,
+    reset_task_deadline_notified,
+    unmark_done,
+    update_task_description,
+    update_task_field,
+)
+from .permissions import is_admin, is_schedule_allowed
+from .utils import is_task_overdue, next_birthday_date, now_kz, parse_due_time, today_kz
 
 _INDEX_PATH = Path(__file__).parent / "webapp" / "index.html"
 _MAX_BODY = 64 * 1024
 _INIT_DATA_MAX_AGE = 24 * 3600  # seconds; Telegram refreshes initData on each open
+_MAX_FILES_PER_REQUEST = 10
 
 _TAG_RE = re.compile(r"<[^>]+>")
+
+
+class ApiError(Exception):
+    def __init__(self, code: int, error: str):
+        super().__init__(error)
+        self.code = code
+        self.error = error
 
 
 def validate_init_data(init_data: str):
@@ -78,44 +114,314 @@ def _task_json(row) -> dict:
         "due_time": row["due_time"] or "",
         "overdue": is_task_overdue(row),
         "attachments": len(get_task_attachments(row["id"])),
+        "created_by": row["created_by"] or "",
     }
 
 
 def build_state(user: dict) -> dict:
+    uid = user["id"]
     today = today_kz()
-    tasks = [_task_json(r) for r in get_tasks(SHARED_TASKS_ID)]
+    all_rows = get_tasks(SHARED_TASKS_ID, only_undone=False, viewer_id=uid)
+    todo = [r for r in all_rows if not r["my_done"]]
+    # only the marks this person made themselves can be undone (legacy
+    # globally-finished tasks stay hidden — there's no per-user mark to remove)
+    finished = [r for r in all_rows if r["my_done"] and not r["done"]]
+    finished.sort(key=lambda r: r["due_date"], reverse=True)
+
     lessons = [
         {
+            "id": r["id"],
             "weekday": r["weekday"],
             "time": r["time"],
+            "subject": r["subject"],
             "subject_name": SUBJECT_NAME.get(r["subject"], r["subject"]),
             "emoji": SUBJECT_EMOJI.get(r["subject"], "📘"),
             "room": r["room"],
         }
-        for r in get_lessons(user["id"])  # in a private chat chat_id == user id
+        for r in get_lessons(uid)  # in a private chat chat_id == user id
     ]
     birthdays = []
+    admin = is_admin(uid)
     for r in get_birthdays():
         nxt = next_birthday_date(r["day"], r["month"], today)
         birthdays.append(
             {
+                "id": r["id"],
                 "name": r["display_name"],
                 "day": r["day"],
                 "month": r["month"],
                 "days_left": (nxt - today).days,
+                "can_delete": admin or r["added_by"] == uid,
             }
         )
     birthdays.sort(key=lambda b: b["days_left"])
-    return {
-        "user": {"id": user["id"], "first_name": user.get("first_name", "")},
-        "can_edit": is_schedule_allowed(user["id"]),
+
+    state = {
+        "user": {"id": uid, "first_name": user.get("first_name", "")},
+        "can_edit": is_schedule_allowed(uid),
+        "is_admin": admin,
         "today": today.isoformat(),
         "weekday": today.weekday(),
         "now": now_kz().strftime("%H:%M"),
-        "tasks": tasks,
+        "subjects": [{"code": c, "name": n, "emoji": SUBJECT_EMOJI.get(c, "📘")} for c, n in SUBJECTS],
+        "tasks": [_task_json(r) for r in todo],
+        "done_tasks": [_task_json(r) for r in finished[:40]],
         "lessons": lessons,
         "birthdays": birthdays,
+        "stats": {"done": len(finished), "todo": len(todo)},
     }
+    if admin:
+        status = get_db_status()
+        labels = ["основная", "резервная №2", "резервная №3"]
+        idx = status.get("active_index", 0)
+        state["db"] = {
+            "postgres": bool(status.get("using_postgres")),
+            "active": labels[idx] if idx < len(labels) else "?",
+            "on_primary": idx == 0,
+            "count": status.get("configured_count", 1),
+        }
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Input validation helpers
+# ---------------------------------------------------------------------------
+def _require_editor(user: dict):
+    if not is_schedule_allowed(user["id"]):
+        raise ApiError(403, "forbidden")
+
+
+def _get_shared_task(body: dict):
+    try:
+        task_id = int(body.get("task_id", 0))
+    except (TypeError, ValueError):
+        raise ApiError(400, "bad_request")
+    task = get_task(task_id)
+    if not task or task["chat_id"] != SHARED_TASKS_ID:
+        raise ApiError(404, "not_found")
+    return task
+
+
+def _clean_text(value, limit: int, required: bool = False) -> str:
+    text = value.strip() if isinstance(value, str) else ""
+    if required and not text:
+        raise ApiError(400, "empty")
+    if len(text) > limit:
+        raise ApiError(400, "too_long")
+    return text
+
+
+def _clean_date(value) -> str:
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        raise ApiError(400, "bad_date")
+
+
+def _clean_time(value) -> str:
+    """'' means no exact time."""
+    if value in (None, ""):
+        return ""
+    t = parse_due_time(str(value))
+    if not t:
+        raise ApiError(400, "bad_time")
+    return t
+
+
+def _clean_subject(value) -> str:
+    if value not in SUBJECT_NAME:
+        raise ApiError(400, "bad_subject")
+    return value
+
+
+def _description_for_storage(text: str):
+    """(text, is_html): long descriptions get structured by the same Groq
+    helper the chat flow uses, falling back silently to plain text."""
+    if GROQ_API_KEY and len(text) >= STRUCTURE_MIN_LENGTH:
+        try:
+            structured = _structure_with_groq(text)
+            if structured:
+                return _sanitize_telegram_html(structured), True
+        except Exception as e:
+            logger.warning("Mini App description structuring failed: %s", e)
+    return text, False
+
+
+# ---------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------
+def act_state(user, body):
+    return build_state(user)
+
+
+def act_done(user, body):
+    _require_editor(user)
+    task = _get_shared_task(body)
+    mark_done(task["id"], user["id"])
+    return {"ok": True}
+
+
+def act_undone(user, body):
+    _require_editor(user)
+    task = _get_shared_task(body)
+    unmark_done(task["id"], user["id"])
+    return {"ok": True}
+
+
+def act_task_add(user, body):
+    _require_editor(user)
+    subject = _clean_subject(body.get("subject"))
+    title = _clean_text(body.get("title"), 200, required=True)
+    description = _clean_text(body.get("description"), 3500)
+    due_date = _clean_date(body.get("due_date"))
+    due_time = _clean_time(body.get("due_time"))
+    text, is_html = _description_for_storage(description) if description else ("", False)
+    task_id = add_task(
+        SHARED_TASKS_ID, subject, title, due_date, due_time or None,
+        created_by=user.get("first_name") or str(user["id"]),
+        description=text or None, description_html=is_html,
+    )
+    return {"ok": True, "id": task_id, "structured": is_html}
+
+
+def act_task_edit(user, body):
+    _require_editor(user)
+    task = _get_shared_task(body)
+    task_id = task["id"]
+    fields = body.get("fields")
+    if not isinstance(fields, dict):
+        raise ApiError(400, "bad_request")
+    deadline_changed = False
+    if "subject" in fields:
+        update_task_field(task_id, "subject", _clean_subject(fields["subject"]))
+    if "title" in fields:
+        update_task_field(task_id, "title", _clean_text(fields["title"], 200, required=True))
+    if "due_date" in fields:
+        update_task_field(task_id, "due_date", _clean_date(fields["due_date"]))
+        deadline_changed = True
+    if "due_time" in fields:
+        update_task_field(task_id, "due_time", _clean_time(fields["due_time"]) or None)
+        deadline_changed = True
+    if "description" in fields:
+        new_desc = _clean_text(fields["description"], 3500)
+        old_plain = _plain(task["description"], bool(task["description_html"]))
+        if new_desc != old_plain:  # untouched text keeps its bold/italic structure
+            text, is_html = _description_for_storage(new_desc) if new_desc else ("", False)
+            update_task_description(task_id, text or None, is_html)
+    if deadline_changed:
+        reset_task_deadline_notified(task_id)
+    return {"ok": True}
+
+
+def act_task_delete(user, body):
+    _require_editor(user)
+    task = _get_shared_task(body)
+    delete_task(task["id"])
+    return {"ok": True}
+
+
+def _telegram_send_file(chat_id: int, att, caption: str = None):
+    method, field = ("sendPhoto", "photo") if att["kind"] == "photo" else ("sendDocument", "document")
+    payload = {"chat_id": chat_id, field: att["file_id"]}
+    if caption:
+        payload["caption"] = caption[:1000]
+    resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/{method}", json=payload, timeout=30)
+    resp.raise_for_status()
+
+
+def act_task_files(user, body):
+    """Sends the task's attachments to the person's private chat with the
+    bot — Mini Apps can't hand Telegram file_ids to the browser, so the
+    server forwards them the same way /taskfile does."""
+    task = _get_shared_task(body)
+    atts = get_task_attachments(task["id"])[:_MAX_FILES_PER_REQUEST]
+    if not atts:
+        raise ApiError(404, "no_files")
+    caption = f"📎 {SUBJECT_NAME.get(task['subject'], task['subject'])}: {task['title']}"
+    sent = 0
+    for i, att in enumerate(atts):
+        try:
+            _telegram_send_file(user["id"], att, caption if i == 0 else None)
+            sent += 1
+        except Exception as e:
+            logger.warning("Mini App could not send attachment of task %s: %s", task["id"], e)
+    if not sent:
+        raise ApiError(502, "send_failed")
+    return {"ok": True, "sent": sent}
+
+
+def act_lesson_add(user, body):
+    _require_editor(user)
+    try:
+        weekday = int(body.get("weekday"))
+    except (TypeError, ValueError):
+        raise ApiError(400, "bad_weekday")
+    if not 0 <= weekday <= 6:
+        raise ApiError(400, "bad_weekday")
+    subject = _clean_subject(body.get("subject"))
+    time_str = _clean_time(body.get("time"))
+    if not time_str:
+        raise ApiError(400, "bad_time")
+    room = _clean_text(body.get("room"), 40, required=True)
+    add_lesson(user["id"], weekday, time_str, subject, room)
+    return {"ok": True}
+
+
+def act_lesson_delete(user, body):
+    _require_editor(user)
+    try:
+        lesson = get_lesson(int(body.get("lesson_id", 0)))
+    except (TypeError, ValueError):
+        raise ApiError(400, "bad_request")
+    if not lesson or lesson["chat_id"] != user["id"]:
+        raise ApiError(404, "not_found")
+    delete_lesson(lesson["id"])
+    return {"ok": True}
+
+
+def act_bday_add(user, body):
+    name = _clean_text(body.get("name"), 60, required=True)
+    try:
+        day, month = int(body.get("day")), int(body.get("month"))
+        year = int(body["year"]) if body.get("year") else None
+        # 2000 is a leap year, so Feb 29 is accepted when no year is given
+        calendar.monthrange(year or 2000, month)
+        if not 1 <= day <= calendar.monthrange(year or 2000, month)[1]:
+            raise ValueError
+        if year is not None and not 1900 <= year <= date.today().year:
+            raise ValueError
+    except (TypeError, ValueError, calendar.IllegalMonthError):
+        raise ApiError(400, "bad_date")
+    add_birthday(0, user["id"], name, day, month, user["id"], year=year)
+    return {"ok": True}
+
+
+def act_bday_delete(user, body):
+    try:
+        row = get_birthday(int(body.get("id", 0)))
+    except (TypeError, ValueError):
+        raise ApiError(400, "bad_request")
+    if not row:
+        raise ApiError(404, "not_found")
+    if not (is_admin(user["id"]) or row["added_by"] == user["id"]):
+        raise ApiError(403, "forbidden")
+    delete_birthday(row["id"])
+    return {"ok": True}
+
+
+_ROUTES = {
+    "/api/state": act_state,
+    "/api/done": act_done,
+    "/api/undone": act_undone,
+    "/api/task/add": act_task_add,
+    "/api/task/edit": act_task_edit,
+    "/api/task/delete": act_task_delete,
+    "/api/task/files": act_task_files,
+    "/api/lesson/add": act_lesson_add,
+    "/api/lesson/delete": act_lesson_delete,
+    "/api/bday/add": act_bday_add,
+    "/api/bday/delete": act_bday_delete,
+}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -162,6 +468,10 @@ class _Handler(BaseHTTPRequestHandler):
     do_HEAD = do_GET
 
     def do_POST(self):
+        action = _ROUTES.get(self.path.split("?", 1)[0])
+        if action is None:
+            self._json(404, {"error": "not_found"})
+            return
         body = self._read_json()
         if not isinstance(body, dict):
             self._json(400, {"error": "bad_request"})
@@ -171,21 +481,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(401, {"error": "unauthorized"})
             return
         try:
-            if self.path == "/api/state":
-                self._json(200, build_state(user))
-            elif self.path == "/api/done":
-                if not is_schedule_allowed(user["id"]):
-                    self._json(403, {"error": "forbidden"})
-                    return
-                task_id = int(body.get("task_id", 0))
-                task = get_task(task_id)
-                if not task or task["chat_id"] != SHARED_TASKS_ID:
-                    self._json(404, {"error": "not_found"})
-                    return
-                mark_done(task_id)
-                self._json(200, {"ok": True})
-            else:
-                self._json(404, {"error": "not_found"})
+            self._json(200, action(user, body))
+        except ApiError as e:
+            self._json(e.code, {"error": e.error})
         except Exception as e:  # never let a bad request kill the thread silently
             logger.warning("Mini App API error on %s: %s", self.path, e)
             self._json(500, {"error": "server_error"})
