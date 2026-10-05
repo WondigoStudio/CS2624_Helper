@@ -1,9 +1,10 @@
 """/start — the welcome message and command list."""
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import ContextTypes
 
 from ..config import (
+    WEBAPP_URL,
     REMINDER_HOUR,
     REMINDER_MINUTE,
     SCHEDULE_HOUR,
@@ -14,6 +15,24 @@ from ..config import (
 from ..db import register_chat
 from ..states import LESSON_REMINDER_MINUTES
 from ..utils import SCHEDULE_OFFSET_MINUTES, TASKS_OFFSET_MINUTES
+
+
+async def app_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    if not WEBAPP_URL:
+        await update.message.reply_text("Мини-приложение пока не настроено.")
+        return
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(
+            f"Мини-приложение открывается в личке с ботом: напиши мне @{context.bot.username} и нажми /app."
+        )
+        return
+    await update.message.reply_text(
+        "Открывай 👇",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("📱 Открыть приложение", web_app=WebAppInfo(url=WEBAPP_URL))]]
+        ),
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -34,6 +53,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/delete — удалить задание\n"
         "/edittask — изменить задание (предмет/текст/описание/дату/время/вложения — можно добавлять несколько)\n"
         "/taskfile — показать все вложения (фото/файлы) у задания\n"
+        "/app — открыть мини-приложение (задания, расписание, дни рождения — в одном окне, в личке)\n"
         "/calendar — календарь месяца кнопками: зелёная — свободный день, "
         "красная — есть задание, синяя — сегодня. Нажми на день — покажу "
         "что на него задано\n\n"
@@ -88,9 +108,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if TRANSLATE_ENABLED:
         text += (
             f"\n🌐 И перевожу: ответь на любое сообщение (реплаем) и упомяни меня "
-            f"через @{context.bot.username} в тексте ответа — переведу его на русский.\n"
+            f"через @{context.bot.username} в тексте ответа — переведу его на русский. "
+            f"Хочешь другой язык — допиши его после упоминания: "
+            f"«@{context.bot.username} английский».\n"
             f"А ещё можно вызвать меня где угодно, даже там, где меня нет в чате — "
-            f"просто напиши @{context.bot.username} и текст в любом окне ввода Telegram."
+            f"просто напиши @{context.bot.username} и текст в любом окне ввода Telegram "
+            f"(на русский), или с языком в начале: «en: hello», «испанский| hello»."
         )
     text += (
         "\n\n🎭 Ещё есть весёлые команды: ответь на чьё-нибудь сообщение словом вроде "
