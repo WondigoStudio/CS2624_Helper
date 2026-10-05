@@ -247,6 +247,20 @@ def init_db(target_url: str = None):
         )
         """
     )
+    # Per-person "done" marks: the task list is shared, but whether YOU have
+    # finished a task is yours alone. (tasks.done = 1 is the legacy global
+    # flag from before this table existed — still honored, so old finished
+    # tasks stay finished for everyone.)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_done (
+            task_id INTEGER NOT NULL,
+            user_id BIGINT NOT NULL,
+            done_at TEXT NOT NULL,
+            PRIMARY KEY (task_id, user_id)
+        )
+        """
+    )
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS birthdays (
@@ -373,12 +387,31 @@ def update_task_description(task_id: int, description: str, description_html: bo
     conn.close()
 
 
-def get_tasks(chat_id: int, only_undone=True, start=None, end=None):
+def viewer_for_chat(chat_id: int):
+    """Private chats have a positive chat_id equal to the person's user id,
+    so "done" marks can be applied for them. Groups (negative ids) have no
+    single person behind them — they only see the legacy global flag."""
+    return chat_id if chat_id and chat_id > 0 else None
+
+
+def get_tasks(chat_id: int, only_undone=True, start=None, end=None, viewer_id=None):
+    """viewer_id: whose personal "done" marks to apply. Rows come back with
+    my_done = 1 if the task is finished for that viewer (their own mark, or
+    the legacy global flag); with only_undone=True those rows are left out."""
     conn = db()
-    q = "SELECT * FROM tasks WHERE chat_id = ?"
-    params = [chat_id]
+    vid = viewer_id if viewer_id is not None else -1  # -1 never matches a real user
+    q = (
+        "SELECT tasks.*, CASE WHEN tasks.done = 1 OR EXISTS ("
+        "SELECT 1 FROM task_done td WHERE td.task_id = tasks.id AND td.user_id = ?"
+        ") THEN 1 ELSE 0 END AS my_done FROM tasks WHERE chat_id = ?"
+    )
+    params = [vid, chat_id]
     if only_undone:
-        q += " AND done = 0"
+        q += (
+            " AND done = 0 AND NOT EXISTS ("
+            "SELECT 1 FROM task_done td WHERE td.task_id = tasks.id AND td.user_id = ?)"
+        )
+        params.append(vid)
     if start:
         q += " AND due_date >= ?"
         params.append(start)
@@ -391,15 +424,36 @@ def get_tasks(chat_id: int, only_undone=True, start=None, end=None):
     return rows
 
 
-def mark_done(task_id: int):
+def mark_done(task_id: int, user_id: int):
+    """Marks the task finished for this one person only."""
     conn = db()
-    conn.execute("UPDATE tasks SET done = 1 WHERE id = ?", (task_id,))
+    conn.execute(
+        "INSERT INTO task_done (task_id, user_id, done_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(task_id, user_id) DO NOTHING",
+        (task_id, user_id, now_kz().isoformat()),
+    )
     conn.commit()
     conn.close()
 
 
+def unmark_done(task_id: int, user_id: int):
+    conn = db()
+    conn.execute("DELETE FROM task_done WHERE task_id = ? AND user_id = ?", (task_id, user_id))
+    conn.commit()
+    conn.close()
+
+
+def users_who_finished(task_id: int) -> set:
+    conn = db()
+    rows = conn.execute("SELECT user_id FROM task_done WHERE task_id = ?", (task_id,)).fetchall()
+    conn.close()
+    return {r["user_id"] for r in rows}
+
+
 def delete_task(task_id: int):
     conn = db()
+    conn.execute("DELETE FROM task_done WHERE task_id = ?", (task_id,))
+    conn.execute("DELETE FROM task_attachments WHERE task_id = ?", (task_id,))
     conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     conn.commit()
     conn.close()
@@ -467,6 +521,15 @@ def mark_task_deadline_notified(task_id: int):
     conn.close()
 
 
+def reset_task_deadline_notified(task_id: int):
+    """Called when a task's due date/time is changed, so the 1-hour heads-up
+    can fire again for the new deadline."""
+    conn = db()
+    conn.execute("UPDATE tasks SET deadline_notified = 0 WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+
+
 def get_task(task_id: int):
     conn = db()
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -474,22 +537,22 @@ def get_task(task_id: int):
     return row
 
 
-def get_task_dates_in_month(chat_id: int, year: int, month: int):
+def get_task_dates_in_month(chat_id: int, year: int, month: int, viewer_id=None):
     start = date(year, month, 1).isoformat()
     last_day = calendar.monthrange(year, month)[1]
     end = date(year, month, last_day).isoformat()
-    rows = get_tasks(chat_id, only_undone=True, start=start, end=end)
+    rows = get_tasks(chat_id, only_undone=True, start=start, end=end, viewer_id=viewer_id)
     return {r["due_date"] for r in rows}
 
 
-def get_overdue_task_dates_in_month(chat_id: int, year: int, month: int):
+def get_overdue_task_dates_in_month(chat_id: int, year: int, month: int, viewer_id=None):
     """Due dates in this month that still have an undone task whose
     deadline has already passed (see is_task_overdue) — used to fade those
     calendar days out instead of tagging them as 'просрочено' in text."""
     start = date(year, month, 1).isoformat()
     last_day = calendar.monthrange(year, month)[1]
     end = date(year, month, last_day).isoformat()
-    rows = get_tasks(chat_id, only_undone=True, start=start, end=end)
+    rows = get_tasks(chat_id, only_undone=True, start=start, end=end, viewer_id=viewer_id)
     return {r["due_date"] for r in rows if is_task_overdue(r)}
 
 
@@ -805,7 +868,7 @@ def delete_birthday(birthday_id: int):
 # into the first backup, once a night into the second) — never run this
 # against SQLite or against DATABASE_URL itself as the target.
 _MIRROR_TABLES = [
-    "tasks", "task_attachments", "chats", "schedule", "room_photos", "actions",
+    "tasks", "task_attachments", "task_done", "chats", "schedule", "room_photos", "actions",
     "schedule_allowed_users", "report_settings", "group_members", "report_chats",
     "reminders", "birthdays",
 ]
