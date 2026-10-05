@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Homework</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --bg2: var(--tg-theme-secondary-bg-color, #f2f3f7);
+    --text: var(--tg-theme-text-color, #14161a);
+    --hint: var(--tg-theme-hint-color, #7b8290);
+    --accent: var(--tg-theme-button-color, #3b82f6);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --danger: #e5484d;
+    --ok: #30a46c;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg2); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { padding: 0 16px calc(84px + env(safe-area-inset-bottom)); }
+  header { padding: 20px 2px 8px; }
+  header h1 { margin: 0; font-size: 24px; letter-spacing: -.02em; }
+  header p { margin: 2px 0 0; color: var(--hint); font-size: 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--hint);
+    margin: 22px 4px 8px; font-weight: 600; }
+  .card { background: var(--bg); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 8px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .emoji { font-size: 24px; width: 34px; text-align: center; flex: none; }
+  .grow { flex: 1; min-width: 0; }
+  .title { font-weight: 600; overflow-wrap: anywhere; }
+  .sub { color: var(--hint); font-size: 14px; }
+  .pill { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+    background: var(--bg2); color: var(--hint); white-space: nowrap; }
+  .pill.late { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+  .pill.soon { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+  .time { font-variant-numeric: tabular-nums; font-weight: 700; width: 48px; flex: none; }
+  .now { outline: 2px solid var(--accent); }
+  .desc { white-space: pre-wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--bg2);
+    font-size: 15px; overflow-wrap: anywhere; }
+  .btn { margin-top: 12px; width: 100%; border: 0; border-radius: 12px; padding: 11px;
+    background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600; cursor: pointer; }
+  .btn:disabled { opacity: .5; }
+  .check { width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--hint); flex: none;
+    background: none; padding: 0; cursor: pointer; display: grid; place-items: center; color: transparent; }
+  .check:active { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .empty { text-align: center; color: var(--hint); padding: 28px 8px; }
+  .big { font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
+  nav { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--bg);
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); border-top: 1px solid var(--bg2); }
+  nav button { flex: 1; border: 0; background: none; color: var(--hint); font: inherit; font-size: 11px;
+    padding: 6px 0; display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; }
+  nav button span { font-size: 21px; }
+  nav button.on { color: var(--accent); font-weight: 600; }
+  .view { display: none; }
+  .view.on { display: block; }
+  .toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); background: #222; color: #fff;
+    padding: 10px 16px; border-radius: 12px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .toast.show { opacity: .95; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="hello">Привет!</h1>
+  <p id="date"></p>
+</header>
+
+<main>
+  <section class="view on" id="v-today"></section>
+  <section class="view" id="v-tasks"></section>
+  <section class="view" id="v-week"></section>
+  <section class="view" id="v-bdays"></section>
+</main>
+
+<nav id="nav">
+  <button data-v="today" class="on"><span>🏠</span>Сегодня</button>
+  <button data-v="tasks"><span>📚</span>Задания</button>
+  <button data-v="week"><span>🗓</span>Неделя</button>
+  <button data-v="bdays"><span>🎂</span>Дни рождения</button>
+</nav>
+<div class="toast" id="toast"></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+const WEEKDAYS = ["Понедельник","Вторник","Среда","Четверг","Пятница","Суббота","Воскресенье"];
+const MONTHS_GEN = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
+let state = null;
+let openTask = null;
+
+const $ = (id) => document.getElementById(id);
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2200); }
+function haptic(kind) { try { tg.HapticFeedback.notificationOccurred(kind); } catch (e) {} }
+
+async function api(path, extra) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(Object.assign({ initData: tg ? tg.initData : "" }, extra || {})),
+  });
+  if (!r.ok) { const e = new Error("http " + r.status); e.status = r.status; throw e; }
+  return r.json();
+}
+
+function parseDate(iso) { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d); }
+function daysFromToday(iso) { return Math.round((parseDate(iso) - parseDate(state.today)) / 86400000); }
+function dueLabel(t) {
+  const n = daysFromToday(t.due_date);
+  const time = t.due_time ? " · " + t.due_time : "";
+  if (t.overdue) return { text: "Просрочено" + time, cls: "late" };
+  if (n === 0) return { text: "Сегодня" + time, cls: "soon" };
+  if (n === 1) return { text: "Завтра" + time, cls: "soon" };
+  const d = parseDate(t.due_date);
+  return { text: d.getDate() + " " + MONTHS_GEN[d.getMonth()] + time, cls: "" };
+}
+function plural(n, one, few, many) {
+  const m = n % 100, k = n % 10;
+  if (m > 10 && m < 20) return many;
+  return k === 1 ? one : (k >= 2 && k <= 4 ? few : many);
+}
+
+function taskCard(t, withCheck) {
+  const due = dueLabel(t);
+  const att = t.attachments ? ` · 📎 ${t.attachments}` : "";
+  const isOpen = openTask === t.id;
+  return `<div class="card" data-id="${t.id}">
+    <div class="row">
+      <div class="emoji">${esc(t.emoji)}</div>
+      <div class="grow" data-toggle="${t.id}">
+        <div class="title">${esc(t.title)}</div>
+        <div class="sub">${esc(t.subject_name)}${att}</div>
+      </div>
+      <span class="pill ${due.cls}">${esc(due.text)}</span>
+      ${withCheck ? `<button class="check" data-done="${t.id}" aria-label="Выполнено">✓</button>` : ""}
+    </div>
+    ${isOpen && t.description ? `<div class="desc">${esc(t.description)}</div>` : ""}
+  </div>`;
+}
+
+function renderToday() {
+  const wd = state.weekday;
+  const lessons = state.lessons.filter(l => l.weekday === wd);
+  const soon = state.tasks.filter(t => t.overdue || daysFromToday(t.due_date) <= 2).slice(0, 4);
+  const b = state.birthdays[0];
+  let h = "<h2>Пары сегодня</h2>";
+  if (!lessons.length) h += `<div class="card empty">Сегодня пар нет 🎉</div>`;
+  lessons.forEach(l => {
+    const ended = l.time < state.now;
+    h += `<div class="card"><div class="row" style="${ended ? "opacity:.5" : ""}">
+      <div class="time">${esc(l.time)}</div>
+      <div class="grow"><div class="title">${esc(l.emoji)} ${esc(l.subject_name)}</div>
+      <div class="sub">каб. ${esc(l.room)}</div></div></div></div>`;
+  });
+  h += "<h2>Скоро сдавать</h2>";
+  if (!soon.length) h += `<div class="card empty">Ближайших дедлайнов нет ✅</div>`;
+  soon.forEach(t => { h += taskCard(t, state.can_edit); });
+  if (b) {
+    h += "<h2>Ближайший день рождения</h2>";
+    h += `<div class="card"><div class="row"><div class="emoji">🎂</div><div class="grow">
+      <div class="title">${esc(b.name)}</div>
+      <div class="sub">${b.day} ${MONTHS_GEN[b.month - 1]}</div></div>
+      <span class="pill soon">${b.days_left === 0 ? "сегодня!" : "через " + b.days_left + " " + plural(b.days_left, "день", "дня", "дней")}</span></div></div>`;
+  }
+  $("v-today").innerHTML = h;
+}
+
+function renderTasks() {
+  if (!state.tasks.length) { $("v-tasks").innerHTML = `<div class="card empty">Невыполненных заданий нет 🎉</div>`; return; }
+  const groups = [["Просрочено", t => t.overdue], ["Сегодня", t => !t.overdue && daysFromToday(t.due_date) === 0],
+    ["Завтра", t => !t.overdue && daysFromToday(t.due_date) === 1],
+    ["Позже", t => !t.overdue && daysFromToday(t.due_date) > 1]];
+  let h = "";
+  groups.forEach(([name, fn]) => {
+    const list = state.tasks.filter(fn);
+    if (!list.length) return;
+    h += `<h2>${name} · ${list.length}</h2>` + list.map(t => taskCard(t, state.can_edit)).join("");
+  });
+  if (!state.can_edit) h += `<div class="sub" style="text-align:center;padding:8px">Отмечать выполненными могут только участники с доступом к заданиям.</div>`;
+  $("v-tasks").innerHTML = h;
+}
+
+function renderWeek() {
+  let h = "";
+  for (let i = 0; i < 7; i++) {
+    const list = state.lessons.filter(l => l.weekday === i);
+    if (!list.length) continue;
+    h += `<h2>${WEEKDAYS[i]}${i === state.weekday ? " · сегодня" : ""}</h2>`;
+    list.forEach(l => {
+      h += `<div class="card ${i === state.weekday ? "now" : ""}"><div class="row">
+        <div class="time">${esc(l.time)}</div>
+        <div class="grow"><div class="title">${esc(l.emoji)} ${esc(l.subject_name)}</div>
+        <div class="sub">каб. ${esc(l.room)}</div></div></div></div>`;
+    });
+  }
+  $("v-week").innerHTML = h || `<div class="card empty">Расписание пока пустое. Добавь пары командой /schedule_add в чате с ботом.</div>`;
+}
+
+function renderBdays() {
+  if (!state.birthdays.length) { $("v-bdays").innerHTML = `<div class="card empty">Дней рождения пока нет.</div>`; return; }
+  $("v-bdays").innerHTML = state.birthdays.map(b => `<div class="card"><div class="row">
+    <div class="emoji">🎂</div><div class="grow"><div class="title">${esc(b.name)}</div>
+    <div class="sub">${b.day} ${MONTHS_GEN[b.month - 1]}</div></div>
+    <span class="pill ${b.days_left <= 7 ? "soon" : ""}">${b.days_left === 0 ? "сегодня!" : b.days_left + " " + plural(b.days_left, "день", "дня", "дней")}</span>
+  </div></div>`).join("");
+}
+
+function render() {
+  const name = state.user.first_name;
+  $("hello").textContent = name ? "Привет, " + name + "!" : "Привет!";
+  const d = parseDate(state.today);
+  $("date").textContent = WEEKDAYS[state.weekday] + ", " + d.getDate() + " " + MONTHS_GEN[d.getMonth()];
+  renderToday(); renderTasks(); renderWeek(); renderBdays();
+}
+
+function showFatal(msg) {
+  ["v-tasks", "v-week", "v-bdays"].forEach(id => $(id).innerHTML = "");
+  $("v-today").innerHTML = `<div class="card empty">${esc(msg)}</div>`;
+}
+
+async function load() {
+  if (!tg || !tg.initData) { showFatal("Открой приложение через бота в Telegram: команда /app."); return; }
+  try { state = await api("/api/state"); render(); }
+  catch (e) { showFatal(e.status === 401 ? "Сессия устарела — закрой и открой приложение заново." : "Не удалось загрузить данные. Сервер мог просто «просыпаться» — попробуй через минуту."); }
+}
+
+document.addEventListener("click", async (ev) => {
+  const done = ev.target.closest("[data-done]");
+  if (done) {
+    const id = Number(done.dataset.done);
+    done.disabled = true;
+    try {
+      await api("/api/done", { task_id: id });
+      state.tasks = state.tasks.filter(t => t.id !== id);
+      haptic("success"); toast("Отмечено как выполненное ✅"); render();
+    } catch (e) { done.disabled = false; haptic("error"); toast(e.status === 403 ? "Нет доступа к заданиям" : "Не получилось, попробуй ещё раз"); }
+    return;
+  }
+  const tog = ev.target.closest("[data-toggle]");
+  if (tog) { const id = Number(tog.dataset.toggle); openTask = openTask === id ? null : id; render(); return; }
+  const nav = ev.target.closest("#nav button");
+  if (nav) {
+    document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b === nav));
+    document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.id === "v-" + nav.dataset.v));
+    window.scrollTo(0, 0);
+  }
+});
+document.addEventListener("visibilitychange", () => { if (!document.hidden && state) load(); });
+load();
+</script>
+</body>
+</html>
