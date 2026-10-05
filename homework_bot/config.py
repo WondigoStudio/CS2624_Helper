@@ -85,6 +85,15 @@ ADMIN_IDS = {1762280778}
 # video note or video sent to the bot is auto-transcribed and replied to —
 # the actual speech-to-text work happens on Groq's servers, so this needs
 # almost no CPU/RAM locally, which matters on Render's free tier.
+# Public https:// address of the Mini App (the same Render web service). Render
+# sets RENDER_EXTERNAL_URL automatically, so this usually needs no setup;
+# set WEBAPP_URL yourself only to override it (e.g. a custom domain).
+WEBAPP_URL = (
+    os.environ.get("WEBAPP_URL") or os.environ.get("RENDER_EXTERNAL_URL") or ""
+).strip().rstrip("/")
+if WEBAPP_URL and not WEBAPP_URL.startswith("https://"):
+    WEBAPP_URL = ""  # Telegram only opens Mini Apps over https
+
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 GROQ_WHISPER_MODEL = "whisper-large-v3"
 TRANSCRIBE_ENABLED = bool(GROQ_API_KEY)
@@ -206,16 +215,12 @@ def start_health_check_server():
     if not port:
         return
 
-    class _Health(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"ok")
+    # Imported lazily: webapp itself imports config/db, so a top-level
+    # import here would be circular. It still answers 200 on "/" (the
+    # health check) and additionally serves the Mini App + its JSON API.
+    from .webapp import make_server
 
-        def log_message(self, *args):
-            pass  # keep the bot's own logs clean
-
-    server = HTTPServer(("0.0.0.0", int(port)), _Health)
+    server = make_server(int(port))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    logger.info("Health-check server listening on port %s", port)
+    logger.info("Health-check + Mini App server listening on port %s", port)
