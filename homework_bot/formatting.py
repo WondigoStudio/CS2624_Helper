@@ -54,16 +54,16 @@ def user_short_name(update: Update) -> str:
     return short_name(update.effective_user)
 
 
-def _overdue_rows(chat_id: int):
+def _overdue_rows(chat_id: int, viewer_id=None):
     """All not-done tasks whose deadline has already passed, regardless of
     due date window — so they show up even on /today or /week where their
     (past) due_date would otherwise exclude them."""
-    rows = get_tasks(chat_id, only_undone=True)
+    rows = get_tasks(chat_id, only_undone=True, viewer_id=viewer_id)
     return [r for r in rows if is_task_overdue(r)]
 
 
-def _overdue_block(chat_id: int) -> str:
-    overdue = _overdue_rows(chat_id)
+def _overdue_block(chat_id: int, viewer_id=None) -> str:
+    overdue = _overdue_rows(chat_id, viewer_id)
     if not overdue:
         return ""
     return "⚠️ Просрочено:\n" + "\n".join(format_task_line(r) for r in overdue) + "\n\n"
