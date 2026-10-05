@@ -20,17 +20,24 @@
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; background: var(--bg2); color: var(--text);
     font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  body { padding: 0 16px calc(84px + env(safe-area-inset-bottom)); }
+  body { padding: 0 16px calc(160px + env(safe-area-inset-bottom)); }
   header { padding: 20px 2px 8px; }
   header h1 { margin: 0; font-size: 24px; letter-spacing: -.02em; }
   header p { margin: 2px 0 0; color: var(--hint); font-size: 14px; }
+  .progress { margin-top: 12px; }
+  .progress .bar { height: 8px; border-radius: 99px; background: color-mix(in srgb, var(--hint) 22%, transparent); overflow: hidden; }
+  .progress .bar i { display: block; height: 100%; background: var(--ok); border-radius: 99px; transition: width .4s; }
+  .progress .cap { font-size: 13px; color: var(--hint); margin-top: 5px; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--hint);
-    margin: 22px 4px 8px; font-weight: 600; }
+    margin: 22px 4px 8px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+  h2 button { text-transform: none; letter-spacing: 0; font-size: 14px; }
   .card { background: var(--bg); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 8px; }
+  .card.faded { opacity: .6; }
   .row { display: flex; align-items: center; gap: 12px; }
   .emoji { font-size: 24px; width: 34px; text-align: center; flex: none; }
   .grow { flex: 1; min-width: 0; }
   .title { font-weight: 600; overflow-wrap: anywhere; }
+  .done .title { text-decoration: line-through; }
   .sub { color: var(--hint); font-size: 14px; }
   .pill { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
     background: var(--bg2); color: var(--hint); white-space: nowrap; }
@@ -40,46 +47,102 @@
   .now { outline: 2px solid var(--accent); }
   .desc { white-space: pre-wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--bg2);
     font-size: 15px; overflow-wrap: anywhere; }
-  .btn { margin-top: 12px; width: 100%; border: 0; border-radius: 12px; padding: 11px;
-    background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600; cursor: pointer; }
-  .btn:disabled { opacity: .5; }
-  .check { width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--hint); flex: none;
-    background: none; padding: 0; cursor: pointer; display: grid; place-items: center; color: transparent; }
+  .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .chipbtn { border: 0; border-radius: 10px; padding: 8px 12px; background: var(--bg2); color: var(--text);
+    font: inherit; font-size: 14px; cursor: pointer; }
+  .chipbtn.danger { color: var(--danger); }
+  .btn { border: 0; border-radius: 12px; padding: 12px; background: var(--accent); color: var(--accent-text);
+    font: inherit; font-weight: 600; cursor: pointer; width: 100%; }
+  .btn:disabled { opacity: .55; }
+  .btn.ghost { background: var(--bg2); color: var(--text); }
+  .link { border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; padding: 0; }
+  .check { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--hint); flex: none;
+    background: none; padding: 0; cursor: pointer; display: grid; place-items: center; color: transparent; font-size: 15px; }
   .check:active { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .check.on { background: var(--ok); border-color: var(--ok); color: #fff; }
   .empty { text-align: center; color: var(--hint); padding: 28px 8px; }
-  .big { font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
+  .filters { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0 2px; margin: 0 -16px; padding-left: 16px; padding-right: 16px; scrollbar-width: none; }
+  .filters::-webkit-scrollbar { display: none; }
+  .filters button { flex: none; border: 0; border-radius: 999px; padding: 7px 13px; background: var(--bg);
+    color: var(--text); font: inherit; font-size: 14px; cursor: pointer; }
+  .filters button.on { background: var(--accent); color: var(--accent-text); }
+  .fab { position: fixed; right: 18px; bottom: calc(86px + env(safe-area-inset-bottom)); width: 56px; height: 56px;
+    border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-text); font-size: 30px; line-height: 1;
+    box-shadow: 0 6px 18px rgba(0,0,0,.25); cursor: pointer; display: none; }
+  .fab.show { display: block; }
   nav { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--bg);
-    padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); border-top: 1px solid var(--bg2); }
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); border-top: 1px solid var(--bg2); }
   nav button { flex: 1; border: 0; background: none; color: var(--hint); font: inherit; font-size: 11px;
     padding: 6px 0; display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; }
   nav button span { font-size: 21px; }
   nav button.on { color: var(--accent); font-weight: 600; }
   .view { display: none; }
   .view.on { display: block; }
-  .toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); background: #222; color: #fff;
-    padding: 10px 16px; border-radius: 12px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .toast { position: fixed; left: 50%; bottom: 100px; transform: translateX(-50%); background: #222; color: #fff;
+    padding: 10px 16px; border-radius: 12px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s;
+    max-width: 90%; text-align: center; z-index: 50; }
   .toast.show { opacity: .95; }
+
+  /* calendar */
+  .cal-head { display: flex; align-items: center; justify-content: space-between; margin: 14px 0 8px; }
+  .cal-head b { font-size: 18px; }
+  .cal-head button { border: 0; background: var(--bg); color: var(--text); width: 38px; height: 38px; border-radius: 12px; font-size: 18px; cursor: pointer; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  .cal-grid .dow { text-align: center; font-size: 12px; color: var(--hint); padding: 4px 0; }
+  .cal-grid .day { aspect-ratio: 1; border: 0; border-radius: 12px; background: var(--bg); color: var(--text);
+    font: inherit; font-size: 15px; position: relative; cursor: pointer; }
+  .cal-grid .day.blank { background: none; cursor: default; }
+  .cal-grid .day.today { outline: 2px solid var(--accent); }
+  .cal-grid .day.sel { background: var(--accent); color: var(--accent-text); }
+  .cal-grid .day i { position: absolute; bottom: 5px; left: 50%; transform: translateX(-50%); width: 6px; height: 6px;
+    border-radius: 50%; background: var(--accent); }
+  .cal-grid .day.sel i { background: var(--accent-text); }
+  .cal-grid .day i.late { background: var(--danger); }
+  .cal-grid .day i.allok { background: var(--ok); }
+
+  /* modal */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: flex-end; z-index: 40; }
+  .overlay.show { display: flex; }
+  .sheet { background: var(--bg); width: 100%; border-radius: 22px 22px 0 0; padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+    max-height: 92vh; overflow-y: auto; }
+  .sheet h3 { margin: 0 0 14px; font-size: 19px; }
+  label { display: block; font-size: 13px; color: var(--hint); margin: 12px 2px 5px; }
+  input, select, textarea { width: 100%; border: 1.5px solid color-mix(in srgb, var(--hint) 30%, transparent); background: var(--bg);
+    color: var(--text); border-radius: 12px; padding: 11px 12px; font: inherit; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  textarea { min-height: 110px; resize: vertical; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .three { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 10px; }
+  .sheet .btns { display: grid; gap: 8px; margin-top: 18px; }
+  .note { font-size: 13px; color: var(--hint); margin-top: 6px; }
 </style>
 </head>
 <body>
 <header>
   <h1 id="hello">Привет!</h1>
   <p id="date"></p>
+  <div class="progress" id="progress"></div>
 </header>
 
 <main>
   <section class="view on" id="v-today"></section>
   <section class="view" id="v-tasks"></section>
+  <section class="view" id="v-cal"></section>
   <section class="view" id="v-week"></section>
-  <section class="view" id="v-bdays"></section>
+  <section class="view" id="v-more"></section>
 </main>
 
+<button class="fab" id="fab" data-act="newtask" aria-label="Добавить задание">+</button>
+
 <nav id="nav">
-  <button data-v="today" class="on"><span>🏠</span>Сегодня</button>
-  <button data-v="tasks"><span>📚</span>Задания</button>
-  <button data-v="week"><span>🗓</span>Неделя</button>
-  <button data-v="bdays"><span>🎂</span>Дни рождения</button>
+  <button data-tab="today" class="on"><span>🏠</span>Сегодня</button>
+  <button data-tab="tasks"><span>📚</span>Задания</button>
+  <button data-tab="cal"><span>📆</span>Календарь</button>
+  <button data-tab="week"><span>🗓</span>Неделя</button>
+  <button data-tab="more"><span>⋯</span>Ещё</button>
 </nav>
+
+<div class="overlay" id="overlay"><div class="sheet" id="sheet"></div></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -87,14 +150,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 
 const WEEKDAYS = ["Понедельник","Вторник","Среда","Четверг","Пятница","Суббота","Воскресенье"];
+const DOW_SHORT = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
+const MONTHS = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
 const MONTHS_GEN = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
+
 let state = null;
-let openTask = null;
+const ui = { tab: "today", filter: "all", open: null, showDone: false, calY: 0, calM: 0, calDay: null };
 
 const $ = (id) => document.getElementById(id);
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
-function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2200); }
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2400); }
 function haptic(kind) { try { tg.HapticFeedback.notificationOccurred(kind); } catch (e) {} }
+function pad(n) { return String(n).padStart(2, "0"); }
+function isoOf(y, m, d) { return y + "-" + pad(m + 1) + "-" + pad(d); }
 
 async function api(path, extra) {
   const r = await fetch(path, {
@@ -102,8 +170,32 @@ async function api(path, extra) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(Object.assign({ initData: tg ? tg.initData : "" }, extra || {})),
   });
-  if (!r.ok) { const e = new Error("http " + r.status); e.status = r.status; throw e; }
+  if (!r.ok) { const e = new Error("http " + r.status); e.status = r.status; e.response = r; throw e; }
   return r.json();
+}
+
+const ERR = { forbidden: "Нет доступа к этому действию", bad_date: "Неверная дата", bad_time: "Неверное время",
+  empty: "Заполни обязательное поле", too_long: "Слишком длинный текст", bad_subject: "Выбери предмет",
+  not_found: "Уже удалено", no_files: "У задания нет вложений", send_failed: "Не удалось отправить файлы" };
+async function act(path, body, okMsg) {
+  try {
+    const res = await api(path, body);
+    haptic("success"); if (okMsg) toast(okMsg);
+    await load();
+    return res;
+  } catch (e) {
+    haptic("error");
+    let msg = "Не получилось, попробуй ещё раз";
+    if (e.status === 403) msg = ERR.forbidden; else if (e.status === 401) msg = "Сессия устарела — открой приложение заново";
+    else if (e.status === 400 || e.status === 404 || e.status === 502) {
+      try { msg = ERR[(await e.response.json()).error] || msg; } catch (_) {}
+    }
+    toast(msg); return null;
+  }
+}
+function confirmDo(msg, fn) {
+  if (tg && tg.showConfirm) tg.showConfirm(msg, (ok) => { if (ok) fn(); });
+  else if (window.confirm(msg)) fn();
 }
 
 function parseDate(iso) { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d); }
@@ -123,89 +215,157 @@ function plural(n, one, few, many) {
   return k === 1 ? one : (k >= 2 && k <= 4 ? few : many);
 }
 
-function taskCard(t, withCheck) {
+/* ---------- cards ---------- */
+function taskCard(t, finished) {
   const due = dueLabel(t);
   const att = t.attachments ? ` · 📎 ${t.attachments}` : "";
-  const isOpen = openTask === t.id;
-  return `<div class="card" data-id="${t.id}">
+  const isOpen = ui.open === t.id;
+  let right = "";
+  if (state.can_edit) {
+    right = finished
+      ? `<button class="check on" data-act="undo" data-id="${t.id}" aria-label="Вернуть">✓</button>`
+      : `<button class="check" data-act="done" data-id="${t.id}" aria-label="Выполнено">✓</button>`;
+  }
+  let extra = "";
+  if (isOpen) {
+    extra += t.description ? `<div class="desc">${esc(t.description)}</div>` : "";
+    let btns = "";
+    if (t.attachments) btns += `<button class="chipbtn" data-act="files" data-id="${t.id}">📎 Прислать файлы в чат</button>`;
+    if (state.can_edit) btns += `<button class="chipbtn" data-act="edit" data-id="${t.id}">✏️ Изменить</button>` +
+      `<button class="chipbtn danger" data-act="del" data-id="${t.id}">🗑 Удалить</button>`;
+    if (btns) extra += `<div class="actions">${btns}</div>`;
+    if (t.created_by) extra += `<div class="note">Добавил(а): ${esc(t.created_by)}</div>`;
+  }
+  return `<div class="card ${finished ? "done faded" : ""}">
     <div class="row">
       <div class="emoji">${esc(t.emoji)}</div>
-      <div class="grow" data-toggle="${t.id}">
+      <div class="grow" data-act="toggle" data-id="${t.id}">
         <div class="title">${esc(t.title)}</div>
         <div class="sub">${esc(t.subject_name)}${att}</div>
       </div>
-      <span class="pill ${due.cls}">${esc(due.text)}</span>
-      ${withCheck ? `<button class="check" data-done="${t.id}" aria-label="Выполнено">✓</button>` : ""}
-    </div>
-    ${isOpen && t.description ? `<div class="desc">${esc(t.description)}</div>` : ""}
-  </div>`;
+      <span class="pill ${finished ? "" : due.cls}">${esc(due.text)}</span>
+      ${right}
+    </div>${extra}</div>`;
+}
+
+function lessonCard(l, opts) {
+  opts = opts || {};
+  return `<div class="card ${opts.now ? "now" : ""}"><div class="row" style="${opts.ended ? "opacity:.5" : ""}">
+    <div class="time">${esc(l.time)}</div>
+    <div class="grow"><div class="title">${esc(l.emoji)} ${esc(l.subject_name)}</div>
+    <div class="sub">каб. ${esc(l.room)}</div></div>
+    ${opts.del && state.can_edit ? `<button class="chipbtn danger" data-act="dellesson" data-id="${l.id}" aria-label="Удалить пару">🗑</button>` : ""}
+  </div></div>`;
+}
+
+function bdayPill(b) {
+  return `<span class="pill ${b.days_left <= 7 ? "soon" : ""}">${b.days_left === 0 ? "сегодня!" : "через " + b.days_left + " " + plural(b.days_left, "день", "дня", "дней")}</span>`;
+}
+
+/* ---------- views ---------- */
+function renderProgress() {
+  const { done, todo } = state.stats; const total = done + todo;
+  if (!total) { $("progress").innerHTML = ""; return; }
+  const pct = Math.round(done / total * 100);
+  $("progress").innerHTML = `<div class="bar"><i style="width:${pct}%"></i></div>
+    <div class="cap">Ты выполнил(а) ${done} из ${total} · осталось ${todo}</div>`;
 }
 
 function renderToday() {
   const wd = state.weekday;
   const lessons = state.lessons.filter(l => l.weekday === wd);
-  const soon = state.tasks.filter(t => t.overdue || daysFromToday(t.due_date) <= 2).slice(0, 4);
+  const soon = state.tasks.filter(t => t.overdue || daysFromToday(t.due_date) <= 2).slice(0, 5);
   const b = state.birthdays[0];
   let h = "<h2>Пары сегодня</h2>";
   if (!lessons.length) h += `<div class="card empty">Сегодня пар нет 🎉</div>`;
-  lessons.forEach(l => {
-    const ended = l.time < state.now;
-    h += `<div class="card"><div class="row" style="${ended ? "opacity:.5" : ""}">
-      <div class="time">${esc(l.time)}</div>
-      <div class="grow"><div class="title">${esc(l.emoji)} ${esc(l.subject_name)}</div>
-      <div class="sub">каб. ${esc(l.room)}</div></div></div></div>`;
-  });
+  lessons.forEach(l => { h += lessonCard(l, { ended: l.time < state.now }); });
   h += "<h2>Скоро сдавать</h2>";
   if (!soon.length) h += `<div class="card empty">Ближайших дедлайнов нет ✅</div>`;
-  soon.forEach(t => { h += taskCard(t, state.can_edit); });
+  soon.forEach(t => { h += taskCard(t, false); });
   if (b) {
     h += "<h2>Ближайший день рождения</h2>";
     h += `<div class="card"><div class="row"><div class="emoji">🎂</div><div class="grow">
-      <div class="title">${esc(b.name)}</div>
-      <div class="sub">${b.day} ${MONTHS_GEN[b.month - 1]}</div></div>
-      <span class="pill soon">${b.days_left === 0 ? "сегодня!" : "через " + b.days_left + " " + plural(b.days_left, "день", "дня", "дней")}</span></div></div>`;
+      <div class="title">${esc(b.name)}</div><div class="sub">${b.day} ${MONTHS_GEN[b.month - 1]}</div></div>${bdayPill(b)}</div></div>`;
   }
   $("v-today").innerHTML = h;
 }
 
 function renderTasks() {
-  if (!state.tasks.length) { $("v-tasks").innerHTML = `<div class="card empty">Невыполненных заданий нет 🎉</div>`; return; }
+  const used = new Set(state.tasks.map(t => t.subject));
+  let h = `<div class="filters"><button data-act="filter" data-v="all" class="${ui.filter === "all" ? "on" : ""}">Все</button>` +
+    state.subjects.filter(s => used.has(s.code)).map(s =>
+      `<button data-act="filter" data-v="${esc(s.code)}" class="${ui.filter === s.code ? "on" : ""}">${esc(s.emoji)} ${esc(s.name)}</button>`).join("") + `</div>`;
+  const list = state.tasks.filter(t => ui.filter === "all" || t.subject === ui.filter);
+  if (!list.length) h += `<div class="card empty" style="margin-top:12px">Невыполненных заданий нет 🎉</div>`;
   const groups = [["Просрочено", t => t.overdue], ["Сегодня", t => !t.overdue && daysFromToday(t.due_date) === 0],
-    ["Завтра", t => !t.overdue && daysFromToday(t.due_date) === 1],
-    ["Позже", t => !t.overdue && daysFromToday(t.due_date) > 1]];
-  let h = "";
+    ["Завтра", t => !t.overdue && daysFromToday(t.due_date) === 1], ["Позже", t => !t.overdue && daysFromToday(t.due_date) > 1]];
   groups.forEach(([name, fn]) => {
-    const list = state.tasks.filter(fn);
-    if (!list.length) return;
-    h += `<h2>${name} · ${list.length}</h2>` + list.map(t => taskCard(t, state.can_edit)).join("");
+    const g = list.filter(fn);
+    if (g.length) h += `<h2>${name} · ${g.length}</h2>` + g.map(t => taskCard(t, false)).join("");
   });
-  if (!state.can_edit) h += `<div class="sub" style="text-align:center;padding:8px">Отмечать выполненными могут только участники с доступом к заданиям.</div>`;
+  const fin = state.done_tasks.filter(t => ui.filter === "all" || t.subject === ui.filter);
+  if (fin.length) {
+    h += `<h2>Выполненные · ${fin.length}<button class="link" data-act="toggledone">${ui.showDone ? "Скрыть" : "Показать"}</button></h2>`;
+    if (ui.showDone) h += fin.map(t => taskCard(t, true)).join("");
+  }
+  if (!state.can_edit) h += `<div class="note" style="text-align:center;padding:10px">Отмечать и добавлять задания могут участники с доступом к заданиям.</div>`;
   $("v-tasks").innerHTML = h;
 }
 
+function renderCal() {
+  const y = ui.calY, m = ui.calM;
+  const all = state.tasks.map(t => Object.assign({ fin: false }, t)).concat(state.done_tasks.map(t => Object.assign({ fin: true }, t)));
+  const byDate = {};
+  all.forEach(t => { (byDate[t.due_date] = byDate[t.due_date] || []).push(t); });
+  const first = new Date(y, m, 1), offset = (first.getDay() + 6) % 7, days = new Date(y, m + 1, 0).getDate();
+  let h = `<div class="cal-head"><button data-act="calnav" data-d="-1">‹</button><b>${MONTHS[m]} ${y}</b><button data-act="calnav" data-d="1">›</button></div><div class="cal-grid">` +
+    DOW_SHORT.map(d => `<div class="dow">${d}</div>`).join("");
+  for (let i = 0; i < offset; i++) h += `<div class="day blank"></div>`;
+  for (let d = 1; d <= days; d++) {
+    const iso = isoOf(y, m, d), list = byDate[iso] || [];
+    let dot = "";
+    if (list.length) {
+      const hasTodo = list.some(t => !t.fin), late = list.some(t => !t.fin && t.overdue);
+      dot = `<i class="${late ? "late" : (hasTodo ? "" : "allok")}"></i>`;
+    }
+    h += `<button class="day ${iso === state.today ? "today" : ""} ${iso === ui.calDay ? "sel" : ""}" data-act="calday" data-iso="${iso}">${d}${dot}</button>`;
+  }
+  h += "</div>";
+  if (ui.calDay) {
+    const list = byDate[ui.calDay] || [], d = parseDate(ui.calDay);
+    h += `<h2>${d.getDate()} ${MONTHS_GEN[d.getMonth()]}${state.can_edit ? `<button class="link" data-act="newtask" data-date="${ui.calDay}">+ Добавить</button>` : ""}</h2>`;
+    h += list.length ? list.map(t => taskCard(t, t.fin)).join("") : `<div class="card empty">Заданий на этот день нет 🎉</div>`;
+  }
+  $("v-cal").innerHTML = h;
+}
+
 function renderWeek() {
-  let h = "";
+  let h = state.can_edit ? `<div style="margin-top:14px"><button class="btn" data-act="newlesson">+ Добавить пару</button></div>` : "";
   for (let i = 0; i < 7; i++) {
     const list = state.lessons.filter(l => l.weekday === i);
     if (!list.length) continue;
-    h += `<h2>${WEEKDAYS[i]}${i === state.weekday ? " · сегодня" : ""}</h2>`;
-    list.forEach(l => {
-      h += `<div class="card ${i === state.weekday ? "now" : ""}"><div class="row">
-        <div class="time">${esc(l.time)}</div>
-        <div class="grow"><div class="title">${esc(l.emoji)} ${esc(l.subject_name)}</div>
-        <div class="sub">каб. ${esc(l.room)}</div></div></div></div>`;
-    });
+    h += `<h2>${WEEKDAYS[i]}${i === state.weekday ? " · сегодня" : ""}</h2>` + list.map(l => lessonCard(l, { now: i === state.weekday, del: true })).join("");
   }
-  $("v-week").innerHTML = h || `<div class="card empty">Расписание пока пустое. Добавь пары командой /schedule_add в чате с ботом.</div>`;
+  if (!state.lessons.length) h += `<div class="card empty" style="margin-top:12px">Расписание пока пустое.</div>`;
+  $("v-week").innerHTML = h;
 }
 
-function renderBdays() {
-  if (!state.birthdays.length) { $("v-bdays").innerHTML = `<div class="card empty">Дней рождения пока нет.</div>`; return; }
-  $("v-bdays").innerHTML = state.birthdays.map(b => `<div class="card"><div class="row">
-    <div class="emoji">🎂</div><div class="grow"><div class="title">${esc(b.name)}</div>
-    <div class="sub">${b.day} ${MONTHS_GEN[b.month - 1]}</div></div>
-    <span class="pill ${b.days_left <= 7 ? "soon" : ""}">${b.days_left === 0 ? "сегодня!" : b.days_left + " " + plural(b.days_left, "день", "дня", "дней")}</span>
-  </div></div>`).join("");
+function renderMore() {
+  let h = `<h2>Дни рождения<button class="link" data-act="newbday">+ Добавить</button></h2>`;
+  h += state.birthdays.length ? state.birthdays.map(b => `<div class="card"><div class="row">
+      <div class="emoji">🎂</div><div class="grow"><div class="title">${esc(b.name)}</div>
+      <div class="sub">${b.day} ${MONTHS_GEN[b.month - 1]}</div></div>${bdayPill(b)}
+      ${b.can_delete ? `<button class="chipbtn danger" data-act="delbday" data-id="${b.id}" aria-label="Удалить">🗑</button>` : ""}
+    </div></div>`).join("") : `<div class="card empty">Дней рождения пока нет.</div>`;
+  if (state.is_admin && state.db) {
+    const d = state.db;
+    h += `<h2>Сервер</h2><div class="card"><div class="row"><div class="emoji">🗄</div><div class="grow">
+      <div class="title">${d.postgres ? "База данных: " + esc(d.active) : "Локальная база (SQLite)"}</div>
+      <div class="sub">${d.postgres ? "Баз в цепочке: " + d.count : "Резервирование не настроено"}</div></div>
+      <span class="pill ${d.on_primary ? "soon" : "late"}">${d.on_primary ? "основная" : "резервная!"}</span></div>
+      ${!d.on_primary ? `<div class="desc">Основная база была недоступна — данные с момента переключения лежат только в резервной.</div>` : ""}</div>`;
+  }
+  $("v-more").innerHTML = h;
 }
 
 function render() {
@@ -213,11 +373,14 @@ function render() {
   $("hello").textContent = name ? "Привет, " + name + "!" : "Привет!";
   const d = parseDate(state.today);
   $("date").textContent = WEEKDAYS[state.weekday] + ", " + d.getDate() + " " + MONTHS_GEN[d.getMonth()];
-  renderToday(); renderTasks(); renderWeek(); renderBdays();
+  if (!ui.calY) { ui.calY = d.getFullYear(); ui.calM = d.getMonth(); ui.calDay = state.today; }
+  renderProgress(); renderToday(); renderTasks(); renderCal(); renderWeek(); renderMore();
+  $("fab").classList.toggle("show", state.can_edit && (ui.tab === "today" || ui.tab === "tasks"));
 }
 
 function showFatal(msg) {
-  ["v-tasks", "v-week", "v-bdays"].forEach(id => $(id).innerHTML = "");
+  ["v-tasks", "v-cal", "v-week", "v-more"].forEach(id => $(id).innerHTML = "");
+  $("progress").innerHTML = ""; $("fab").classList.remove("show");
   $("v-today").innerHTML = `<div class="card empty">${esc(msg)}</div>`;
 }
 
@@ -227,28 +390,106 @@ async function load() {
   catch (e) { showFatal(e.status === 401 ? "Сессия устарела — закрой и открой приложение заново." : "Не удалось загрузить данные. Сервер мог просто «просыпаться» — попробуй через минуту."); }
 }
 
+/* ---------- forms ---------- */
+function openSheet(html) { $("sheet").innerHTML = html; $("overlay").classList.add("show"); }
+function closeSheet() { $("overlay").classList.remove("show"); }
+function subjectOptions(sel) { return state.subjects.map(s => `<option value="${esc(s.code)}" ${s.code === sel ? "selected" : ""}>${esc(s.emoji)} ${esc(s.name)}</option>`).join(""); }
+
+function taskForm(task, presetDate) {
+  const t = task || { subject: state.subjects[0].code, title: "", description: "", due_date: presetDate || state.today, due_time: "" };
+  openSheet(`<h3>${task ? "Изменить задание" : "Новое задание"}</h3>
+    <label>Предмет</label><select id="f-subject">${subjectOptions(t.subject)}</select>
+    <label>Название</label><input id="f-title" maxlength="200" placeholder="Например: Лабораторная №3">
+    <label>Описание (необязательно)</label><textarea id="f-desc" maxlength="3500" placeholder="Что нужно сделать"></textarea>
+    <div class="note">Длинное описание бот сам разобьёт на абзацы и выделит главное.</div>
+    <div class="two"><div><label>Дата сдачи</label><input id="f-date" type="date"></div>
+    <div><label>Время (необязательно)</label><input id="f-time" type="time"></div></div>
+    <div class="note">Файлы к заданию добавляй командой /edittask в чате с ботом.</div>
+    <div class="btns"><button class="btn" id="f-save">${task ? "Сохранить" : "Добавить"}</button><button class="btn ghost" data-act="closesheet">Отмена</button></div>`);
+  $("f-title").value = t.title; $("f-desc").value = t.description; $("f-date").value = t.due_date; $("f-time").value = t.due_time;
+  $("f-save").onclick = async () => {
+    const body = { subject: $("f-subject").value, title: $("f-title").value, description: $("f-desc").value,
+      due_date: $("f-date").value, due_time: $("f-time").value };
+    if (!body.title.trim()) { toast("Впиши название"); return; }
+    if (!body.due_date) { toast("Выбери дату"); return; }
+    $("f-save").disabled = true; $("f-save").textContent = body.description.length > 220 ? "✨ Структурирую описание…" : "Сохраняю…";
+    const res = task ? await act("/api/task/edit", { task_id: task.id, fields: body }, "Сохранено ✅")
+                     : await act("/api/task/add", body, "Задание добавлено ✅");
+    if (res) closeSheet(); else { $("f-save").disabled = false; $("f-save").textContent = task ? "Сохранить" : "Добавить"; }
+  };
+}
+
+function lessonForm() {
+  openSheet(`<h3>Новая пара</h3>
+    <label>День недели</label><select id="l-day">${WEEKDAYS.map((n, i) => `<option value="${i}" ${i === state.weekday ? "selected" : ""}>${n}</option>`).join("")}</select>
+    <label>Предмет</label><select id="l-subject">${subjectOptions()}</select>
+    <div class="two"><div><label>Время начала</label><input id="l-time" type="time" value="09:00"></div>
+    <div><label>Кабинет</label><input id="l-room" maxlength="40" placeholder="301"></div></div>
+    <div class="btns"><button class="btn" id="l-save">Добавить</button><button class="btn ghost" data-act="closesheet">Отмена</button></div>`);
+  $("l-save").onclick = async () => {
+    const body = { weekday: Number($("l-day").value), subject: $("l-subject").value, time: $("l-time").value, room: $("l-room").value };
+    if (!body.time) { toast("Укажи время"); return; }
+    if (!body.room.trim()) { toast("Укажи кабинет"); return; }
+    $("l-save").disabled = true;
+    const res = await act("/api/lesson/add", body, "Пара добавлена ✅");
+    if (res) closeSheet(); else $("l-save").disabled = false;
+  };
+}
+
+function bdayForm() {
+  const days = Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}">${i + 1}</option>`).join("");
+  const months = MONTHS.map((n, i) => `<option value="${i + 1}">${n}</option>`).join("");
+  openSheet(`<h3>Новый день рождения</h3>
+    <label>Имя</label><input id="b-name" maxlength="60" placeholder="Например: Айдар">
+    <div class="three"><div><label>День</label><select id="b-day">${days}</select></div>
+    <div><label>Месяц</label><select id="b-month">${months}</select></div>
+    <div><label>Год</label><input id="b-year" type="number" inputmode="numeric" placeholder="не обяз."></div></div>
+    <div class="btns"><button class="btn" id="b-save">Добавить</button><button class="btn ghost" data-act="closesheet">Отмена</button></div>`);
+  $("b-save").onclick = async () => {
+    const name = $("b-name").value.trim();
+    if (!name) { toast("Впиши имя"); return; }
+    $("b-save").disabled = true;
+    const res = await act("/api/bday/add", { name, day: Number($("b-day").value), month: Number($("b-month").value), year: $("b-year").value || null }, "Добавлено 🎂");
+    if (res) closeSheet(); else $("b-save").disabled = false;
+  };
+}
+
+function findTask(id) { return state.tasks.concat(state.done_tasks).find(t => t.id === id); }
+
+/* ---------- events ---------- */
 document.addEventListener("click", async (ev) => {
-  const done = ev.target.closest("[data-done]");
-  if (done) {
-    const id = Number(done.dataset.done);
-    done.disabled = true;
-    try {
-      await api("/api/done", { task_id: id });
-      state.tasks = state.tasks.filter(t => t.id !== id);
-      haptic("success"); toast("Отмечено как выполненное ✅"); render();
-    } catch (e) { done.disabled = false; haptic("error"); toast(e.status === 403 ? "Нет доступа к заданиям" : "Не получилось, попробуй ещё раз"); }
-    return;
-  }
-  const tog = ev.target.closest("[data-toggle]");
-  if (tog) { const id = Number(tog.dataset.toggle); openTask = openTask === id ? null : id; render(); return; }
   const nav = ev.target.closest("#nav button");
   if (nav) {
+    ui.tab = nav.dataset.tab;
     document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b === nav));
-    document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.id === "v-" + nav.dataset.v));
-    window.scrollTo(0, 0);
+    document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.id === "v-" + ui.tab));
+    if (state) $("fab").classList.toggle("show", state.can_edit && (ui.tab === "today" || ui.tab === "tasks"));
+    window.scrollTo(0, 0); return;
+  }
+  if (ev.target === $("overlay")) { closeSheet(); return; }
+  const el = ev.target.closest("[data-act]");
+  if (!el || !state) return;
+  const id = Number(el.dataset.id);
+  switch (el.dataset.act) {
+    case "done": el.disabled = true; await act("/api/done", { task_id: id }, "Отмечено ✅ — только у тебя"); break;
+    case "undo": el.disabled = true; await act("/api/undone", { task_id: id }, "Вернул в список"); break;
+    case "toggle": ui.open = ui.open === id ? null : id; render(); break;
+    case "toggledone": ui.showDone = !ui.showDone; render(); break;
+    case "filter": ui.filter = el.dataset.v; render(); break;
+    case "edit": { const t = findTask(id); if (t) taskForm(t); break; }
+    case "del": confirmDo("Удалить задание у всех? Это нельзя отменить.", () => act("/api/task/delete", { task_id: id }, "Удалено")); break;
+    case "files": el.disabled = true; { const r = await act("/api/task/files", { task_id: id }); if (r) toast("Прислал " + r.sent + " " + plural(r.sent, "файл", "файла", "файлов") + " в чат с ботом 📎"); } break;
+    case "newtask": taskForm(null, el.dataset.date); break;
+    case "newlesson": lessonForm(); break;
+    case "dellesson": confirmDo("Удалить пару из расписания?", () => act("/api/lesson/delete", { lesson_id: id }, "Пара удалена")); break;
+    case "newbday": bdayForm(); break;
+    case "delbday": confirmDo("Удалить этот день рождения у всех?", () => act("/api/bday/delete", { id }, "Удалено")); break;
+    case "calnav": { const d = new Date(ui.calY, ui.calM + Number(el.dataset.d), 1); ui.calY = d.getFullYear(); ui.calM = d.getMonth(); ui.calDay = null; render(); break; }
+    case "calday": ui.calDay = el.dataset.iso; render(); break;
+    case "closesheet": closeSheet(); break;
   }
 });
-document.addEventListener("visibilitychange", () => { if (!document.hidden && state) load(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && state && !$("overlay").classList.contains("show")) load(); });
 load();
 </script>
 </body>
