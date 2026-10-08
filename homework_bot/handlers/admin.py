@@ -9,7 +9,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from ..config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3, LMS_ICAL_URL
+from ..config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3
 from ..constants import WEEKDAY_EMOJI, WEEKDAY_NAMES_FULL_RU
 from ..db import (
     display_name,
@@ -23,43 +23,8 @@ from ..db import (
 )
 from ..formatting import format_lessons_block
 from ..jobs import send_morning_schedule_for_chat
-from ..lms_sync import sync_lms
 from ..permissions import is_admin
 from ..utils import now_kz
-
-
-async def lmssync_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Pulls LMS deadlines right now and reports what changed."""
-    register_chat(update)
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Эта команда доступна только администраторам бота.")
-        return
-    if not LMS_ICAL_URL:
-        await update.message.reply_text(
-            "Ссылка на календарь LMS не задана. Добавь переменную LMS_ICAL_URL "
-            "(ссылка из LMS → Calendar → Export calendar → Get calendar URL) и перезапусти бота."
-        )
-        return
-    status = await update.message.reply_text("⏳ Забираю дедлайны из LMS…")
-    try:
-        report = await asyncio.to_thread(sync_lms)
-    except Exception as e:
-        await status.edit_text(f"❌ Не получилось: {e}")
-        return
-    lines = [f"✅ Готово. Событий в календаре: {report['events']}"]
-    if report["added"]:
-        lines.append(f"\n➕ Добавлено ({len(report['added'])}):")
-        lines += [f"• {t}" for t in report["added"][:25]]
-        if len(report["added"]) > 25:
-            lines.append(f"…и ещё {len(report['added']) - 25}")
-    if report["updated"]:
-        lines.append(f"\n🔄 Обновлено ({len(report['updated'])}):")
-        lines += [f"• {t}" for t in report["updated"][:15]]
-    if not report["added"] and not report["updated"]:
-        lines.append("Новых и изменённых дедлайнов нет.")
-    if report["unknown_subject"]:
-        lines.append("\n⚠️ Не знаю предмет для: " + "; ".join(report["unknown_subject"][:5]))
-    await status.edit_text("\n".join(lines))
 
 
 async def backupnow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
