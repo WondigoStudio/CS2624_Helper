@@ -8,6 +8,7 @@ Run with:  python -m homework_bot.main
 from datetime import time as dtime
 
 from telegram import MenuButtonWebApp, WebAppInfo
+from telegram.error import Conflict
 
 from telegram.ext import (
     Application,
@@ -223,7 +224,21 @@ def main():
         except Exception as e:
             logger.warning("Could not set Mini App menu button: %s", e)
 
+    async def _on_error(update, context):
+        # "Conflict" = another copy of this bot is polling with the same token
+        # (typically the old instance during a deploy, or a second service /
+        # a computer still running it). One short line instead of a full
+        # traceback every second.
+        if isinstance(context.error, Conflict):
+            logger.warning(
+                "Telegram Conflict: another instance is polling with the same BOT_TOKEN. "
+                "Harmless for a minute during a deploy; if it persists, stop the other copy."
+            )
+            return
+        logger.error("Unhandled error", exc_info=context.error)
+
     app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
+    app.add_error_handler(_on_error)
 
     add_conv = ConversationHandler(
         entry_points=[CommandHandler("add", add_start)],
@@ -336,6 +351,14 @@ def main():
             BDAY_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addbirthday_date_typed)],
         },
         fallbacks=[CommandHandler("cancel", addbirthday_cancel)],
+    )
+
+    lms_conv = ConversationHandler(
+        entry_points=[CommandHandler("lms", lms_start)],
+        states={
+            LMS_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, lms_url_typed)],
+        },
+        fallbacks=[CommandHandler("cancel", lms_cancel)],
     )
 
     importbirthdays_conv = ConversationHandler(
@@ -462,14 +485,6 @@ def main():
     if TRANSLATE_ENABLED and requests is not None:
         app.add_handler(InlineQueryHandler(inline_translate))
         logger.info("Reply-to-translate and inline translation enabled (Groq).")
-
-    lms_conv = ConversationHandler(
-        entry_points=[CommandHandler("lms", lms_start)],
-        states={
-            LMS_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, lms_url_typed)],
-        },
-        fallbacks=[CommandHandler("cancel", lms_cancel)],
-    )
 
     # ----------------------------------------------------
     # Планировщик задач (JobQueue)
