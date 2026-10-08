@@ -79,7 +79,7 @@ from .states import (
 )
 
 from .handlers.start import app_cmd, start
-from .handlers.lms import lms_cancel, lms_start, lms_url_typed, lmsoff_cmd, lmssync_cmd
+from .handlers.lms import lms_cancel, lms_file_received, lms_start, lms_url_typed, lmsoff_cmd, lmssync_cmd
 from .handlers.tasks import (
     add_attachment_document,
     add_attachment_done,
@@ -356,7 +356,10 @@ def main():
     lms_conv = ConversationHandler(
         entry_points=[CommandHandler("lms", lms_start)],
         states={
-            LMS_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, lms_url_typed)],
+            LMS_URL: [
+                MessageHandler(filters.Document.ALL, lms_file_received),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, lms_url_typed),
+            ],
         },
         fallbacks=[CommandHandler("cancel", lms_cancel)],
     )
