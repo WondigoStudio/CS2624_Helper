@@ -79,6 +79,7 @@ from .states import (
 )
 
 from .handlers.start import app_cmd, start
+from .handlers.weather import weather_cmd
 from .handlers.lms import lms_cancel, lms_file_received, lms_start, lms_url_typed, lmsoff_cmd, lmssync_cmd
 from .handlers.tasks import (
     add_attachment_document,
@@ -377,6 +378,7 @@ def main():
     # ----------------------------------------------------
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("app", app_cmd))
+    app.add_handler(CommandHandler("weather", weather_cmd))
     app.add_handler(add_conv)
     app.add_handler(schedule_add_conv)
     app.add_handler(addroomphoto_conv)
