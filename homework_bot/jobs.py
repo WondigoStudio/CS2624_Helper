@@ -10,8 +10,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from .config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3, SHARED_TASKS_ID, logger
+from .config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3, LMS_ICAL_URL, SHARED_TASKS_ID, logger
 from .constants import SUBJECT_NAME, WEEKDAY_NAMES_FULL_RU
+from .lms_sync import sync_lms
 from .db import (
     all_chat_ids,
     bump_reminder_nag,
@@ -355,6 +356,17 @@ async def backup_to_tertiary(context: ContextTypes.DEFAULT_TYPE):
         logger.info("Backup to tertiary DB: %s", "ok" if ok else "skipped (not Postgres)")
     except Exception as e:
         logger.error("Backup to tertiary DB failed: %s", e)
+
+
+async def sync_lms_job(context: ContextTypes.DEFAULT_TYPE):
+    """Periodic pull of LMS deadlines into the shared task list (no-op
+    unless LMS_ICAL_URL is set). A failure is logged and retried next time."""
+    if not LMS_ICAL_URL:
+        return
+    try:
+        await asyncio.to_thread(sync_lms)
+    except Exception as e:
+        logger.warning("LMS sync failed: %s", e)
 
 
 TASK_DEADLINE_LEAD_MINUTES = 60
