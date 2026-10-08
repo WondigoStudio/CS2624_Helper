@@ -260,6 +260,19 @@ def init_db(target_url: str = None):
         )
         """
     )
+    # Each person's own LMS calendar link (contains a personal token). One row
+    # per person; see lms_sync.py / handlers/lms.py.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lms_feeds (
+            user_id BIGINT PRIMARY KEY,
+            url TEXT NOT NULL,
+            added_at TEXT NOT NULL,
+            last_sync TEXT,
+            error_notified INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
     # Per-person "done" marks: the task list is shared, but whether YOU have
     # finished a task is yours alone. (tasks.done = 1 is the legacy global
     # flag from before this table existed — still honored, so old finished
@@ -532,6 +545,75 @@ def mark_task_deadline_notified(task_id: int):
     conn.execute("UPDATE tasks SET deadline_notified = 1 WHERE id = ?", (task_id,))
     conn.commit()
     conn.close()
+
+
+def save_lms_feed(user_id: int, url: str):
+    conn = db()
+    conn.execute(
+        "INSERT INTO lms_feeds (user_id, url, added_at, last_sync, error_notified) VALUES (?, ?, ?, ?, 0) "
+        "ON CONFLICT(user_id) DO UPDATE SET url = excluded.url, error_notified = 0",
+        (user_id, url, now_kz().isoformat(), now_kz().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_lms_feed(user_id: int):
+    conn = db()
+    row = conn.execute("SELECT * FROM lms_feeds WHERE user_id = ?", (user_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def list_lms_feeds():
+    conn = db()
+    rows = conn.execute("SELECT * FROM lms_feeds").fetchall()
+    conn.close()
+    return rows
+
+
+def delete_lms_feed(user_id: int) -> bool:
+    conn = db()
+    cur = conn.execute("DELETE FROM lms_feeds WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    return bool(cur.rowcount)
+
+
+def set_lms_feed_result(user_id: int, ok: bool, error_notified: bool = None):
+    """After a sync attempt: stamp last_sync on success; error_notified
+    remembers that the person was already told the link stopped working, so
+    they get that message once, not every 10 minutes."""
+    conn = db()
+    if ok:
+        conn.execute(
+            "UPDATE lms_feeds SET last_sync = ?, error_notified = 0 WHERE user_id = ?",
+            (now_kz().isoformat(), user_id),
+        )
+    elif error_notified is not None:
+        conn.execute(
+            "UPDATE lms_feeds SET error_notified = ? WHERE user_id = ?",
+            (1 if error_notified else 0, user_id),
+        )
+    conn.commit()
+    conn.close()
+
+
+def find_duplicate_task(subject: str, title: str, due_date: str, due_time):
+    """An existing shared task that is the same assignment (same subject,
+    title, date and time, ignoring case) — used so the same LMS deadline
+    arriving from two people's feeds becomes ONE task."""
+    conn = db()
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE chat_id = 0 AND subject = ? AND due_date = ?",
+        (subject, due_date),
+    ).fetchall()
+    conn.close()
+    want = (title.strip().lower(), due_time or "")
+    for r in rows:
+        if (r["title"].strip().lower(), r["due_time"] or "") == want:
+            return r
+    return None
 
 
 def get_lms_link(uid: str):
@@ -899,7 +981,7 @@ def delete_birthday(birthday_id: int):
 # into the first backup, once a night into the second) — never run this
 # against SQLite or against DATABASE_URL itself as the target.
 _MIRROR_TABLES = [
-    "tasks", "task_attachments", "task_done", "lms_synced", "chats", "schedule", "room_photos", "actions",
+    "tasks", "task_attachments", "task_done", "lms_synced", "lms_feeds", "chats", "schedule", "room_photos", "actions",
     "schedule_allowed_users", "report_settings", "group_members", "report_chats",
     "reminders", "birthdays",
 ]
