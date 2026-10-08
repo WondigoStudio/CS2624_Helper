@@ -206,13 +206,30 @@ def validate_feed_url(raw: str):
     return url
 
 
+# Many university sites (Moodle behind a firewall/CDN) refuse the default
+# "python-requests" client; look like an ordinary browser instead.
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept": "text/calendar,text/plain,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+}
+
+
 def fetch_events(url: str):
     """Blocking. Raises RuntimeError with a safe message (requests errors can
     embed the full URL, token included, so they are never passed on)."""
     try:
-        resp = requests.get(url, timeout=30, allow_redirects=False)
+        resp = requests.get(url, timeout=30, allow_redirects=False, headers=_HEADERS)
     except Exception as e:
         raise RuntimeError(f"LMS недоступен ({type(e).__name__})") from None
+    if resp.status_code in (401, 403):
+        raise RuntimeError(
+            f"LMS отказал в доступе (код {resp.status_code}). Либо ссылка устарела, либо LMS не пускает "
+            "сервер бота — тогда пришли вместо ссылки файл .ics (в LMS кнопка «Export»)"
+        )
     if resp.status_code != 200:
         raise RuntimeError(f"LMS ответил кодом {resp.status_code} — ссылка могла устареть")
     if "BEGIN:VCALENDAR" not in resp.text:
@@ -243,3 +260,11 @@ def sync_all_feeds() -> list:
             logger.warning("LMS sync failed for user %s: %s", feed["user_id"], e)
             results.append((feed["user_id"], None, str(e)))
     return results
+
+
+def sync_ics_text(text: str) -> dict:
+    """One-off import from an .ics file the person sent (works even when the
+    LMS refuses the bot's server). Not repeated automatically."""
+    if "BEGIN:VCALENDAR" not in text:
+        raise RuntimeError("это не файл календаря .ics")
+    return apply_events(parse_ics(text))
