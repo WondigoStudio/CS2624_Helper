@@ -12,6 +12,7 @@ from telegram.ext import ContextTypes
 
 from .config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3, SHARED_TASKS_ID, logger
 from .constants import SUBJECT_NAME, WEEKDAY_NAMES_FULL_RU
+from .handlers.weather import morning_weather_text
 from .lms_sync import sync_all_feeds
 from .db import (
     all_chat_ids,
@@ -169,6 +170,12 @@ async def check_adaptive_schedule(context: ContextTypes.DEFAULT_TYPE):
             await send_morning_schedule_for_chat(context.bot, chat_id, weekday)
         except Exception as e:
             logger.warning("Could not send morning schedule to chat %s: %s", chat_id, e)
+        try:
+            weather = await morning_weather_text()
+            if weather:
+                await context.bot.send_message(chat_id=chat_id, text=weather, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.warning("Could not send morning weather to chat %s: %s", chat_id, e)
 
 
 async def check_adaptive_tasks(context: ContextTypes.DEFAULT_TYPE):
