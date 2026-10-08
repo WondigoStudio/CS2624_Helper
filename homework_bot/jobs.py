@@ -10,9 +10,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from .config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3, LMS_ICAL_URL, SHARED_TASKS_ID, logger
+from .config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3, SHARED_TASKS_ID, logger
 from .constants import SUBJECT_NAME, WEEKDAY_NAMES_FULL_RU
-from .lms_sync import sync_lms
+from .lms_sync import sync_all_feeds
 from .db import (
     all_chat_ids,
     bump_reminder_nag,
@@ -24,6 +24,8 @@ from .db import (
     get_tasks,
     init_db,
     list_known_users,
+    list_lms_feeds,
+    set_lms_feed_result,
     mark_reminder_fired,
     mark_task_deadline_notified,
     mirror_active_db_to,
@@ -359,14 +361,25 @@ async def backup_to_tertiary(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def sync_lms_job(context: ContextTypes.DEFAULT_TYPE):
-    """Periodic pull of LMS deadlines into the shared task list (no-op
-    unless LMS_ICAL_URL is set). A failure is logged and retried next time."""
-    if not LMS_ICAL_URL:
+    """Pulls every connected person's LMS calendar into the shared task list.
+    If someone's link stops working, tell them once (not every run)."""
+    feeds = {f["user_id"]: f for f in list_lms_feeds()}
+    if not feeds:
         return
-    try:
-        await asyncio.to_thread(sync_lms)
-    except Exception as e:
-        logger.warning("LMS sync failed: %s", e)
+    results = await asyncio.to_thread(sync_all_feeds)
+    for user_id, report, error in results:
+        if error is None:
+            continue
+        if not feeds[user_id]["error_notified"]:
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"⚠️ Не получилось обновить дедлайны из LMS: {error}.\n"
+                         "Пришли новую ссылку командой /lms.",
+                )
+            except Exception as e:
+                logger.warning("Could not notify %s about broken LMS link: %s", user_id, e)
+            set_lms_feed_result(user_id, ok=False, error_notified=True)
 
 
 TASK_DEADLINE_LEAD_MINUTES = 60
