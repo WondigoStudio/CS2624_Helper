@@ -94,6 +94,11 @@ WEBAPP_URL = (
 if WEBAPP_URL and not WEBAPP_URL.startswith("https://"):
     WEBAPP_URL = ""  # Telegram only opens Mini Apps over https
 
+# Moodle (LMS) calendar export URL — contains a personal access token, so keep
+# it ONLY here as an environment variable (never commit it to GitHub). See
+# lms_sync.py. Empty = LMS sync disabled.
+LMS_ICAL_URL = os.environ.get("LMS_ICAL_URL", "").strip()
+
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 GROQ_WHISPER_MODEL = "whisper-large-v3"
 TRANSCRIBE_ENABLED = bool(GROQ_API_KEY)
