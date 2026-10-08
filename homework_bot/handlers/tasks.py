@@ -242,11 +242,17 @@ async def add_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+def _viewer(update: Update):
+    """In a private chat, hide what this person already finished. In a group
+    everyone sees the whole shared list (nobody's personal marks hide it)."""
+    return update.effective_user.id if update.effective_chat.type == "private" else None
+
+
 async def today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     d = today_kz().isoformat()
-    rows = [r for r in get_tasks(SHARED_TASKS_ID, start=d, end=d, viewer_id=update.effective_user.id) if not is_task_overdue(r)]
-    overdue_block = _overdue_block(SHARED_TASKS_ID, update.effective_user.id)
+    rows = [r for r in get_tasks(SHARED_TASKS_ID, start=d, end=d, viewer_id=_viewer(update)) if not is_task_overdue(r)]
+    overdue_block = _overdue_block(SHARED_TASKS_ID, _viewer(update))
     if not rows and not overdue_block:
         await update.message.reply_text("На сегодня заданий нет 🎉")
         return
@@ -259,8 +265,8 @@ async def week_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     start = today_kz().isoformat()
     end = (today_kz() + timedelta(days=7)).isoformat()
-    rows = [r for r in get_tasks(SHARED_TASKS_ID, start=start, end=end, viewer_id=update.effective_user.id) if not is_task_overdue(r)]
-    overdue_block = _overdue_block(SHARED_TASKS_ID, update.effective_user.id)
+    rows = [r for r in get_tasks(SHARED_TASKS_ID, start=start, end=end, viewer_id=_viewer(update)) if not is_task_overdue(r)]
+    overdue_block = _overdue_block(SHARED_TASKS_ID, _viewer(update))
     if not rows and not overdue_block:
         await update.message.reply_text("На эту неделю заданий нет 🎉")
         return
@@ -271,7 +277,7 @@ async def week_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
-    rows = get_tasks(SHARED_TASKS_ID, viewer_id=update.effective_user.id)
+    rows = get_tasks(SHARED_TASKS_ID, viewer_id=_viewer(update))
     if not rows:
         await update.message.reply_text("Список пуст 🎉")
         return
