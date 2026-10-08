@@ -13,6 +13,11 @@ from ..keyboards import calendar_keyboard
 from ..utils import today_kz
 
 
+def _viewer(update: Update):
+    # private chat: hide what this person finished; group: show everything
+    return update.effective_user.id if update.effective_chat.type == "private" else None
+
+
 async def calendar_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     today = today_kz()
@@ -28,7 +33,7 @@ async def calendar_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     await update.message.reply_text(
         f"{MONTH_NAMES_RU[month]} {year}\nНажми на день, чтобы посмотреть задания.",
-        reply_markup=calendar_keyboard(SHARED_TASKS_ID, year, month, update.effective_user.id),
+        reply_markup=calendar_keyboard(SHARED_TASKS_ID, year, month, _viewer(update)),
     )
 
 
@@ -39,7 +44,7 @@ async def calendar_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     year, month = int(year), int(month)
     await query.edit_message_text(
         f"{MONTH_NAMES_RU[month]} {year}\nНажми на день, чтобы посмотреть задания.",
-        reply_markup=calendar_keyboard(SHARED_TASKS_ID, year, month, update.effective_user.id),
+        reply_markup=calendar_keyboard(SHARED_TASKS_ID, year, month, _viewer(update)),
     )
 
 
@@ -52,7 +57,7 @@ async def calendar_day_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     iso_day = query.data.split(":")[1]
     d = datetime.strptime(iso_day, "%Y-%m-%d").date()
     rows = get_tasks(SHARED_TASKS_ID, only_undone=False, start=iso_day, end=iso_day,
-                     viewer_id=update.effective_user.id)
+                     viewer_id=_viewer(update))
     if not rows:
         alert_text = f"{d.strftime('%d.%m.%Y')} — заданий нет 🎉"
         full_text = None
