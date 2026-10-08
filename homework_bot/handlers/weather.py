@@ -7,6 +7,7 @@ Data: Open-Meteo (free, no API key). `/weather` shows the default city
 import asyncio
 import html
 import time
+from datetime import datetime, timedelta
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -75,6 +76,55 @@ def _geocode(city: str):
     return found
 
 
+_METNO_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
+_METNO_UA = "homework-bot-telegram/1.0 (student project)"
+
+
+def _symbol_to_wmo(symbol: str) -> int:
+    s = (symbol or "").split("_")[0]
+    if "thunder" in s:
+        return 95
+    table = {"clearsky": 0, "fair": 1, "partlycloudy": 2, "cloudy": 3, "fog": 45,
+             "lightrain": 61, "rain": 63, "heavyrain": 65, "lightrainshowers": 80,
+             "rainshowers": 81, "heavyrainshowers": 82, "lightsleet": 66, "sleet": 67,
+             "heavysleet": 67, "lightsnow": 71, "snow": 73, "heavysnow": 75,
+             "lightsnowshowers": 85, "snowshowers": 85, "heavysnowshowers": 86}
+    return table.get(s, 3)
+
+
+def _fetch_metno(place: dict) -> dict:
+    """Backup source (MET Norway) converted to the Open-Meteo shape used by
+    format_weather. No key needed; has no feels-like/visibility/sun times."""
+    resp = requests.get(
+        _METNO_URL, params={"lat": round(place["latitude"], 4), "lon": round(place["longitude"], 4)},
+        headers={"User-Agent": _METNO_UA}, timeout=15,
+    )
+    resp.raise_for_status()
+    series = resp.json()["properties"]["timeseries"]
+    first = series[0]
+    d = first["data"]["instant"]["details"]
+    nxt = first["data"].get("next_1_hours") or first["data"].get("next_6_hours") or {}
+    temps = [t["data"]["instant"]["details"]["air_temperature"] for t in series[:24]]
+    # local clock: shift UTC by the longitude's rough timezone
+    utc = datetime.strptime(first["time"], "%Y-%m-%dT%H:%M:%SZ")
+    local = utc + timedelta(hours=round(place["longitude"] / 15))
+    return {
+        "current": {
+            "temperature_2m": d["air_temperature"],
+            "apparent_temperature": None,
+            "relative_humidity_2m": d.get("relative_humidity"),
+            "weather_code": _symbol_to_wmo(nxt.get("summary", {}).get("symbol_code", "")),
+            "cloud_cover": d.get("cloud_area_fraction"),
+            "pressure_msl": d.get("air_pressure_at_sea_level"),
+            "wind_speed_10m": d.get("wind_speed"),
+            "wind_direction_10m": d.get("wind_from_direction"),
+            "visibility": None,
+            "time": local.strftime("%Y-%m-%dT%H:%M"),
+        },
+        "daily": {"temperature_2m_min": [min(temps)], "temperature_2m_max": [max(temps)]},
+    }
+
+
 def _fetch(place: dict) -> dict:
     """Blocking. Raw Open-Meteo response (cached for a few minutes)."""
     key = (round(place["latitude"], 2), round(place["longitude"], 2))
@@ -101,7 +151,13 @@ def _fetch(place: dict) -> dict:
         except Exception as e:  # shared hosting IPs often hit the free rate limit
             last_err = e
             if attempt < 2:
-                time.sleep(2 * (attempt + 1))
+                time.sleep(1 + attempt)
+    try:
+        data = _fetch_metno(place)
+        _weather_cache[key] = (time.time(), data)
+        return data
+    except Exception as e:
+        logger.warning("Backup weather source failed: %s", e)
     if hit and time.time() - hit[0] < _STALE_SECONDS:
         return hit[1]  # better slightly old weather than none
     raise last_err
@@ -114,8 +170,9 @@ def format_weather(place: dict, data: dict) -> str:
         f"{emoji} <b>Погода: {html.escape(place['name'])}</b> {_flag(place.get('country_code'))}".rstrip(),
         f"<i>{desc}</i>",
         "──────────────────",
-        f"🌡 <b>Температура:</b> {_temp(cur['temperature_2m'])} "
-        f"<i>(ощущается как {_temp(cur['apparent_temperature'])})</i>",
+        f"🌡 <b>Температура:</b> {_temp(cur['temperature_2m'])}"
+        + (f" <i>(ощущается как {_temp(cur['apparent_temperature'])})</i>"
+           if cur.get("apparent_temperature") is not None else ""),
     ]
     try:
         lines.append(
