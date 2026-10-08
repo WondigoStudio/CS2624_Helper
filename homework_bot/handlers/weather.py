@@ -19,7 +19,8 @@ DEFAULT_CITY = {"name": "Астана", "latitude": 51.1801, "longitude": 71.446
 
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
-_CACHE_SECONDS = 600  # many people asking at once shouldn't hammer the API
+_CACHE_SECONDS = 900
+_STALE_SECONDS = 6 * 3600  # many people asking at once shouldn't hammer the API
 
 _geo_cache: dict = {}
 _weather_cache: dict = {}
@@ -80,21 +81,30 @@ def _fetch(place: dict) -> dict:
     hit = _weather_cache.get(key)
     if hit and time.time() - hit[0] < _CACHE_SECONDS:
         return hit[1]
-    resp = requests.get(
-        _FORECAST_URL,
-        params={
-            "latitude": place["latitude"], "longitude": place["longitude"],
-            "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,"
-                       "cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,visibility",
-            "daily": "temperature_2m_max,temperature_2m_min,sunrise,sunset",
-            "wind_speed_unit": "ms", "timezone": "auto", "forecast_days": 1,
-        },
-        timeout=15,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    _weather_cache[key] = (time.time(), data)
-    return data
+    params = {
+        "latitude": place["latitude"], "longitude": place["longitude"],
+        "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,"
+                   "cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,visibility",
+        "daily": "temperature_2m_max,temperature_2m_min,sunrise,sunset",
+        "wind_speed_unit": "ms", "timezone": "auto", "forecast_days": 1,
+    }
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(_FORECAST_URL, params=params, timeout=15)
+            if resp.status_code in (429, 502, 503, 504):
+                raise RuntimeError(f"HTTP {resp.status_code}")
+            resp.raise_for_status()
+            data = resp.json()
+            _weather_cache[key] = (time.time(), data)
+            return data
+        except Exception as e:  # shared hosting IPs often hit the free rate limit
+            last_err = e
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+    if hit and time.time() - hit[0] < _STALE_SECONDS:
+        return hit[1]  # better slightly old weather than none
+    raise last_err
 
 
 def format_weather(place: dict, data: dict) -> str:
@@ -158,3 +168,14 @@ async def weather_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.warning("Weather failed: %s", e)
         await status.edit_text("Не получилось получить погоду.")
+
+
+async def morning_weather_text():
+    """Weather for the default city as HTML for the morning message, or None
+    if the service is unavailable (the morning message just goes without it)."""
+    try:
+        data = await asyncio.to_thread(_fetch, DEFAULT_CITY)
+        return format_weather(DEFAULT_CITY, data)
+    except Exception as e:
+        logger.warning("Morning weather failed: %s", e)
+        return None
