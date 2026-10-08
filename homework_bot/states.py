@@ -20,3 +20,4 @@ REMIND_TEXT, REMIND_WHEN, REMIND_DAILY_TIME, REMIND_WEEKLY_DAY, REMIND_WEEKLY_TI
 BDAY_TARGET, BDAY_DATE = range(35, 37)
 # Conversation state for /importbirthdays (bulk-paste)
 BDAY_IMPORT = 37
+LMS_URL = 38
