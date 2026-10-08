@@ -247,6 +247,19 @@ def init_db(target_url: str = None):
         )
         """
     )
+    # Which LMS calendar events have already been turned into tasks (see
+    # lms_sync.py). Kept even after the task is deleted, so a deleted task
+    # isn't re-imported on the next sync. signature = what the task looked
+    # like when last synced, to notice when the LMS changes the event.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lms_synced (
+            uid TEXT PRIMARY KEY,
+            task_id INTEGER NOT NULL,
+            signature TEXT NOT NULL
+        )
+        """
+    )
     # Per-person "done" marks: the task list is shared, but whether YOU have
     # finished a task is yours alone. (tasks.done = 1 is the legacy global
     # flag from before this table existed — still honored, so old finished
@@ -517,6 +530,24 @@ def clear_task_attachments(task_id: int):
 def mark_task_deadline_notified(task_id: int):
     conn = db()
     conn.execute("UPDATE tasks SET deadline_notified = 1 WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_lms_link(uid: str):
+    conn = db()
+    row = conn.execute("SELECT * FROM lms_synced WHERE uid = ?", (uid,)).fetchone()
+    conn.close()
+    return row
+
+
+def set_lms_link(uid: str, task_id: int, signature: str):
+    conn = db()
+    conn.execute(
+        "INSERT INTO lms_synced (uid, task_id, signature) VALUES (?, ?, ?) "
+        "ON CONFLICT(uid) DO UPDATE SET task_id = excluded.task_id, signature = excluded.signature",
+        (uid, task_id, signature),
+    )
     conn.commit()
     conn.close()
 
@@ -868,7 +899,7 @@ def delete_birthday(birthday_id: int):
 # into the first backup, once a night into the second) — never run this
 # against SQLite or against DATABASE_URL itself as the target.
 _MIRROR_TABLES = [
-    "tasks", "task_attachments", "task_done", "chats", "schedule", "room_photos", "actions",
+    "tasks", "task_attachments", "task_done", "lms_synced", "chats", "schedule", "room_photos", "actions",
     "schedule_allowed_users", "report_settings", "group_members", "report_chats",
     "reminders", "birthdays",
 ]
