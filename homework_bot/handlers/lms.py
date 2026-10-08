@@ -13,7 +13,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 from ..config import LMS_HOST
 from ..db import delete_lms_feed, get_lms_feed, register_chat, save_lms_feed
-from ..lms_sync import sync_all_feeds, sync_feed, validate_feed_url
+from ..lms_sync import sync_all_feeds, sync_feed, sync_ics_text, validate_feed_url
 from ..permissions import is_admin, is_schedule_allowed
 from ..states import LMS_URL
 
@@ -24,7 +24,9 @@ _HOW_TO = (
     "3. Нажми «Get calendar URL» → «Copy URL».\n"
     "4. Пришли эту ссылку сюда одним сообщением.\n\n"
     "🔒 В ссылке есть твой личный токен, поэтому я удалю это сообщение из чата "
-    "сразу после того, как прочитаю. /cancel — отмена."
+    "сразу после того, как прочитаю.\n\n"
+    "Если LMS не пускает бота по ссылке — нажми там «Export» и пришли скачанный файл "
+    ".ics сюда (дедлайны из него добавятся один раз, без автообновления). /cancel — отмена."
 )
 
 
@@ -93,6 +95,24 @@ async def lms_url_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Календарь подключён. Дальше я сам проверяю его каждые 10 минут. "
         "Сообщение со ссылкой удалено.\n\n" + _format_report(report)
     )
+    return ConversationHandler.END
+
+
+async def lms_file_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """An exported .ics file instead of a link: one-time import."""
+    doc = update.message.document
+    if doc.file_size and doc.file_size > 2 * 1024 * 1024:
+        await update.message.reply_text("Файл слишком большой для календаря. Пришли .ics из LMS ещё раз или /cancel.")
+        return LMS_URL
+    status = await update.message.reply_text("⏳ Читаю файл…")
+    try:
+        tg_file = await context.bot.get_file(doc.file_id)
+        data = bytes(await tg_file.download_as_bytearray())
+        report = await asyncio.to_thread(sync_ics_text, data.decode("utf-8", errors="replace"))
+    except Exception as e:
+        await status.edit_text(f"❌ Не получилось: {e}\nПришли файл .ics ещё раз или /cancel.")
+        return LMS_URL
+    await status.edit_text("✅ Файл прочитан (разовый импорт).\n\n" + _format_report(report))
     return ConversationHandler.END
 
 
