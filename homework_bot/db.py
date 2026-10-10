@@ -3,6 +3,8 @@ migrations, and every read/write query used by the bot."""
 
 import calendar
 import sqlite3
+import threading
+import time
 from datetime import date
 
 from telegram import Update
@@ -32,10 +34,18 @@ _active_db_index = 0
 
 
 def _connect_pg(url: str):
-    return psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor, connect_timeout=5)
+    return psycopg2.connect(
+        url,
+        cursor_factory=psycopg2.extras.RealDictCursor,
+        connect_timeout=5,
+        # notice a connection the host silently dropped (Neon/Render idle
+        # timeouts) instead of hanging on it
+        keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3,
+    )
 
 
 def _connect_with_failover():
+    """(connection, index of the database it belongs to)."""
     global _active_db_index
     last_err = None
     for offset in range(len(_DB_URLS)):
@@ -53,8 +63,48 @@ def _connect_with_failover():
                 _active_db_index, idx, _active_db_index,
             )
             _active_db_index = idx
-        return conn
+        return conn, idx
     raise last_err
+
+
+# --- Connection pool ------------------------------------------------------
+# Opening a Postgres connection (TCP + TLS + auth) to a remote host costs
+# 100-300 ms; the bot used to do it for every single query. Idle connections
+# are now kept and reused. A connection that the server closed in the
+# meantime is detected on first use and replaced transparently.
+_POOL_MAX = 8
+_pool = []  # [(connection, db_index)]
+_pool_lock = threading.Lock()
+
+
+def _pool_take():
+    with _pool_lock:
+        while _pool:
+            conn, idx = _pool.pop()
+            if idx == _active_db_index and not conn.closed:
+                return conn, idx
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return None
+
+
+def _pool_give(conn, idx):
+    try:
+        if conn.closed or idx != _active_db_index:
+            raise RuntimeError("stale")
+        conn.rollback()  # never park a connection inside an open transaction
+        with _pool_lock:
+            if len(_pool) < _POOL_MAX:
+                _pool.append((conn, idx))
+                return
+    except Exception:
+        pass
+    try:
+        conn.close()
+    except Exception:
+        pass
 
 
 def get_db_status() -> dict:
@@ -69,31 +119,54 @@ def get_db_status() -> dict:
 
 def db():
     if USE_POSTGRES:
-        conn = _connect_with_failover() if len(_DB_URLS) > 1 else _connect_pg(_DB_URLS[0])
-        return _PGConn(conn)
-    conn = sqlite3.connect(DB_PATH)
+        taken = _pool_take()
+        if taken is None:
+            taken = _connect_with_failover()
+        return _PGConn(*taken)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     return conn
 
 
 class _PGConn:
     """Thin wrapper so the rest of the code (written for sqlite3) can use a
     Postgres connection unchanged: '?' placeholders are translated to '%s',
-    and RealDictCursor rows already support row["col"] like sqlite3.Row."""
+    and RealDictCursor rows already support row["col"] like sqlite3.Row.
+    close() hands the connection back to the pool instead of closing it."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, idx=0):
         self._conn = conn
+        self._idx = idx
+        self._statements = 0  # in the current transaction
 
     def execute(self, sql, params=()):
-        cur = self._conn.cursor()
-        cur.execute(sql.replace("?", "%s"), params)
-        return cur
+        sql = sql.replace("?", "%s")
+        for attempt in (0, 1):
+            try:
+                cur = self._conn.cursor()
+                cur.execute(sql, params)
+                self._statements += 1
+                return cur
+            except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                # the server dropped an idle pooled connection: replace it and
+                # retry — but only if nothing was done on it in this transaction
+                if attempt or self._statements:
+                    raise
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn, self._idx = _connect_with_failover()
 
     def commit(self):
         self._conn.commit()
+        self._statements = 0
 
     def close(self):
-        self._conn.close()
+        _pool_give(self._conn, self._idx)
 
 
 def _existing_columns(conn, table: str) -> set:
@@ -113,7 +186,7 @@ def init_db(target_url: str = None):
     make sure a backup database is ready to receive mirrored data before
     the first backup job runs against it."""
     if target_url is not None:
-        conn = _PGConn(_connect_pg(target_url))
+        conn = _PGConn(_connect_pg(target_url), -1)
     else:
         conn = db()
     id_pk = "SERIAL PRIMARY KEY" if USE_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -381,8 +454,19 @@ def init_db(target_url: str = None):
         # Safe/no-op if the column is already BIGINT.
         for table in ("chats", "tasks", "schedule", "room_photos", "reminders", "birthdays"):
             conn.execute(f"ALTER TABLE {table} ALTER COLUMN chat_id TYPE BIGINT")
+    for ddl in (
+        "CREATE INDEX IF NOT EXISTS idx_tasks_chat_due ON tasks (chat_id, due_date)",
+        "CREATE INDEX IF NOT EXISTS idx_task_done_user ON task_done (user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_schedule_chat_wd ON schedule (chat_id, weekday)",
+        "CREATE INDEX IF NOT EXISTS idx_schedule_wd_time ON schedule (weekday, time)",
+    ):
+        conn.execute(ddl)
     conn.commit()
     conn.close()
+
+_chat_seen = {}  # chat_id -> (signature, monotonic time of the last write)
+_CHAT_REFRESH_SECONDS = 300
+
 
 def register_chat(update: Update):
     chat_id = update.effective_chat.id
@@ -391,6 +475,14 @@ def register_chat(update: Update):
     username = user.username if user else None
     first_name = user.first_name if user else None
     last_name = user.last_name if user else None
+    # Almost every command calls this. Writing the same row to the database on
+    # each message is pure overhead, so repeat writes within a few minutes are skipped
+    # (a changed name or chat type is written immediately).
+    signature = (username, first_name, last_name, chat_type)
+    seen = _chat_seen.get(chat_id)
+    if seen and seen[0] == signature and time.monotonic() - seen[1] < _CHAT_REFRESH_SECONDS:
+        return
+    _chat_seen[chat_id] = (signature, time.monotonic())
     conn = db()
     conn.execute(
         """
@@ -493,6 +585,22 @@ def unmark_done(task_id: int, user_id: int):
     conn.execute("DELETE FROM task_done WHERE task_id = ? AND user_id = ?", (task_id, user_id))
     conn.commit()
     conn.close()
+
+
+def done_users_for(task_ids) -> dict:
+    """{task_id: {user ids who finished it}} for many tasks in one query."""
+    ids = [int(t) for t in task_ids]
+    if not ids:
+        return {}
+    conn = db()
+    rows = conn.execute(
+        f"SELECT task_id, user_id FROM task_done WHERE task_id IN ({','.join('?' * len(ids))})", ids
+    ).fetchall()
+    conn.close()
+    out = {}
+    for r in rows:
+        out.setdefault(r["task_id"], set()).add(r["user_id"])
+    return out
 
 
 def users_who_finished(task_id: int) -> set:
@@ -700,6 +808,28 @@ def all_chat_ids():
     rows = conn.execute("SELECT chat_id FROM chats").fetchall()
     conn.close()
     return [r["chat_id"] for r in rows]
+
+
+def first_lesson_times(weekday: int) -> dict:
+    """{chat_id: earliest lesson time that weekday} — one query for everyone,
+    instead of one per chat."""
+    conn = db()
+    rows = conn.execute(
+        "SELECT chat_id, MIN(time) AS first_time FROM schedule WHERE weekday = ? GROUP BY chat_id",
+        (weekday,),
+    ).fetchall()
+    conn.close()
+    return {r["chat_id"]: r["first_time"] for r in rows}
+
+
+def lessons_starting_at(weekday: int, time_str: str):
+    """Every lesson (all chats) that starts exactly at time_str that weekday."""
+    conn = db()
+    rows = conn.execute(
+        "SELECT * FROM schedule WHERE weekday = ? AND time = ?", (weekday, time_str)
+    ).fetchall()
+    conn.close()
+    return rows
 
 
 def get_chat_thread(chat_id: int):
