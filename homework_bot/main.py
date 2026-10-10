@@ -128,6 +128,7 @@ from .handlers.schedule import (
     copyschedule_source_chosen,
     copyschedule_target_chosen,
     editschedule_field_chosen,
+    editschedule_owner_chosen,
     editschedule_picked,
     editschedule_room_typed,
     editschedule_start,
@@ -139,6 +140,7 @@ from .handlers.schedule import (
     schedule_day_chosen,
     schedule_day_start,
     schedule_delete_chosen,
+    schedule_delete_owner_chosen,
     schedule_delete_cmd,
     schedule_room_typed,
     schedule_subject_chosen,
@@ -325,7 +327,10 @@ def main():
     editschedule_conv = ConversationHandler(
         entry_points=[CommandHandler("editschedule", editschedule_start)],
         states={
-            EDIT_LESSON_PICK: [CallbackQueryHandler(editschedule_picked, pattern="^editlesson:")],
+            EDIT_LESSON_PICK: [
+                CallbackQueryHandler(editschedule_owner_chosen, pattern="^edowner:"),
+                CallbackQueryHandler(editschedule_picked, pattern="^editlesson:"),
+            ],
             EDIT_LESSON_FIELD: [CallbackQueryHandler(editschedule_field_chosen, pattern="^editlfield:")],
             EDIT_LESSON_WEEKDAY: [CallbackQueryHandler(editschedule_weekday_chosen, pattern="^editlwd:")],
             EDIT_LESSON_SUBJECT: [CallbackQueryHandler(editschedule_subject_chosen, pattern="^editlsub:")],
@@ -418,6 +423,7 @@ def main():
     app.add_handler(CommandHandler("schedule_day", schedule_day_start))
     app.add_handler(CallbackQueryHandler(schedule_day_chosen, pattern="^schday:"))
     app.add_handler(CommandHandler("schedule_delete", schedule_delete_cmd))
+    app.add_handler(CallbackQueryHandler(schedule_delete_owner_chosen, pattern="^sdowner:"))
     app.add_handler(CallbackQueryHandler(schedule_delete_chosen, pattern="^schdel:"))
     app.add_handler(CommandHandler("roomphotos", roomphotos_cmd))
     app.add_handler(CommandHandler("users", users_cmd))
