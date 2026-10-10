@@ -212,3 +212,34 @@ async def topactions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
+
+
+async def sethere_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/sethere — in a group (or one of its topics): send the bot's daily
+    messages (schedule, weather, homework, reminders, poll) to THIS place."""
+    from ..db import set_chat_thread
+    from ..permissions import is_admin
+
+    register_chat(update)
+    chat, user, msg = update.effective_chat, update.effective_user, update.message
+    if chat.type not in ("group", "supergroup"):
+        await msg.reply_text("Эту команду нужно писать в группе — в том топике, куда присылать напоминания.")
+        return
+    allowed = is_admin(user.id)
+    if not allowed:
+        try:
+            member = await context.bot.get_chat_member(chat.id, user.id)
+            allowed = member.status in ("creator", "administrator")
+        except Exception:
+            allowed = False
+    if not allowed:
+        await msg.reply_text("Назначать место для напоминаний могут только админы группы.")
+        return
+    thread = msg.message_thread_id if msg.is_topic_message else None
+    set_chat_thread(chat.id, thread)
+    if thread:
+        await msg.reply_text("✅ Готово: напоминания, расписание, погода и опрос теперь приходят в этот топик.")
+    elif getattr(chat, "is_forum", False):
+        await msg.reply_text("✅ Напоминания будут приходить в основной топик (General).")
+    else:
+        await msg.reply_text("✅ Напоминания приходят в этот чат. (В группе с топиками напиши /sethere в нужном топике.)")
