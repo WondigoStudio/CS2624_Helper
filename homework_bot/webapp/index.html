@@ -254,7 +254,7 @@ function lessonCard(l, opts) {
     <div class="time">${esc(l.time)}</div>
     <div class="grow"><div class="title">${esc(l.emoji)} ${esc(l.subject_name)}</div>
     <div class="sub">каб. ${esc(l.room)}</div></div>
-    ${opts.del && state.can_edit ? `<button class="chipbtn danger" data-act="dellesson" data-id="${l.id}" aria-label="Удалить пару">🗑</button>` : ""}
+    ${opts.del && state.can_schedule ? `<button class="chipbtn danger" data-act="dellesson" data-id="${l.id}" aria-label="Удалить пару">🗑</button>` : ""}
   </div></div>`;
 }
 
@@ -340,7 +340,7 @@ function renderCal() {
 }
 
 function renderWeek() {
-  let h = state.can_edit ? `<div style="margin-top:14px"><button class="btn" data-act="newlesson">+ Добавить пару</button></div>` : "";
+  let h = state.can_schedule ? `<div style="margin-top:14px"><button class="btn" data-act="newlesson">+ Добавить пару</button></div>` : "";
   for (let i = 0; i < 7; i++) {
     const list = state.lessons.filter(l => l.weekday === i);
     if (!list.length) continue;
