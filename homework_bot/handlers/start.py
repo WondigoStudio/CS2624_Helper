@@ -75,6 +75,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/schedule — расписание на сегодня\n"
         "/schedule_week — расписание на всю неделю\n"
         "/schedule_day — расписание на выбранный день недели + фото кабинетов\n"
+        "/copyschedule — скопировать себе чужое расписание (с фото кабинетов), потом поправить через /editschedule\n"
         "/schedule_delete — удалить пару из расписания\n"
         "/editschedule — изменить пару (день/предмет/время/кабинет)\n"
         "/addroomphoto — прикрепить фото (карту/фото) к кабинету\n"
