@@ -158,7 +158,7 @@ def _adaptive_target_time(chat_id: int, chat_type, offset_minutes: int, default_
     (groups, or a private chat with no lessons today / unknown chat_type
     from before this feature existed) falls back to the same fixed time
     used for everyone previously."""
-    if chat_type == "private":
+    if chat_type == "private" or (chat_type is None and chat_id > 0):
         lessons = get_lessons(chat_id, now_kz().weekday())
         if lessons:
             return _time_minus_minutes(lessons[0]["time"], offset_minutes)
