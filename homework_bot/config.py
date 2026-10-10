@@ -150,6 +150,13 @@ MAX_DOWNLOAD_MB = int(os.environ.get("MAX_DOWNLOAD_MB", "50"))
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+# httpx logs every request URL at INFO — and Telegram's Bot API puts the bot
+# TOKEN in that URL, so the token ended up in plain text in the logs. Keep
+# those lines out (warnings/errors from httpx are still shown).
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)  # otherwise ~6 log lines every minute
+
 logger = logging.getLogger(__name__)
 
 YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "").strip() or None
