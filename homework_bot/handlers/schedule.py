@@ -20,7 +20,7 @@ from ..db import (
 )
 from ..formatting import format_lessons_block
 from ..keyboards import _edit_lesson_field_keyboard, subject_keyboard, target_user_keyboard, weekday_keyboard
-from ..permissions import allow_user_schedule, disallow_user_schedule, is_admin, is_schedule_allowed
+from ..permissions import PERMS, is_admin, is_schedule_allowed, set_perm, user_perms
 from ..states import (
     CHOOSING_TARGET_USER,
     EDIT_LESSON_FIELD,
@@ -54,40 +54,82 @@ async def schedule_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     return SCH_WEEKDAY
 
-async def allow_schedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+_PERM_ICON = {"tasks": "📝", "schedule": "🗓", "lms": "🎓"}
+
+
+def _perm_summary(user_id: int) -> str:
+    if is_admin(user_id):
+        return "👑 админ"
+    have = user_perms(user_id)
+    return " ".join(f"{_PERM_ICON[k]}{'✅' if k in have else '❌'}" for k in PERMS)
+
+
+def _perm_list_keyboard():
+    rows = [
+        [InlineKeyboardButton(f"{display_name(r)}  {_perm_summary(r['chat_id'])}", callback_data=f"permu:{r['chat_id']}")]
+        for r in list_known_users()
+        if r["chat_type"] == "private"
+    ]
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+_PERM_HELP = "📝 Задания  🗓 Расписание  🎓 LMS"
+
+
+async def permissions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/permissions (and the old /allow_schedule): admin panel — which person
+    may use tasks, the timetable and the LMS link."""
     register_chat(update)
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администраторам.")
         return
-    rows = list_known_users()
-    if not rows:
+    kb = _perm_list_keyboard()
+    if kb is None:
         await update.message.reply_text("Пользователей не найдено.")
         return
-    buttons = [
-        [InlineKeyboardButton(
-            f"{'✅ ' if is_schedule_allowed(r['chat_id']) else ''}{display_name(r)}",
-            callback_data=f"toggle_sch_perm:{r['chat_id']}"
-        )]
-        for r in rows
-    ]
-    await update.message.reply_text(
-        "Выберите пользователя, чтобы переключить доступ к расписанию:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    await update.message.reply_text(f"Права пользователей ({_PERM_HELP}). Выбери человека:", reply_markup=kb)
 
-async def toggle_schedule_permission_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+def _perm_user_view(target_id: int):
+    name = next((display_name(r) for r in list_known_users() if r["chat_id"] == target_id), f"id{target_id}")
+    if is_admin(target_id):
+        return f"{name} — админ, у него есть все права.", InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⬅️ Назад", callback_data="permback")]]
+        )
+    have = user_perms(target_id)
+    rows = [
+        [InlineKeyboardButton(f"{'✅' if k in have else '❌'} {label}", callback_data=f"permt:{target_id}:{k}")]
+        for k, label in PERMS.items()
+    ]
+    rows.append([
+        InlineKeyboardButton("Всё включить", callback_data=f"permall:{target_id}:1"),
+        InlineKeyboardButton("Всё выключить", callback_data=f"permall:{target_id}:0"),
+    ])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="permback")])
+    return f"Права: {name}\nНажми, чтобы включить/выключить.", InlineKeyboardMarkup(rows)
+
+
+async def permissions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if not is_admin(update.effective_user.id):
+    if not is_admin(query.from_user.id):
         return
-    target_id = int(query.data.split(":")[1])
-    if is_schedule_allowed(target_id):
-        disallow_user_schedule(target_id)
-        msg = f"Доступ к расписанию для пользователя {target_id} отключен ❌"
-    else:
-        allow_user_schedule(target_id)
-        msg = f"Доступ к расписанию для пользователя {target_id} включен ✅"
-    await query.edit_message_text(msg)
+    parts = query.data.split(":")
+    action = parts[0]
+    if action == "permback":
+        kb = _perm_list_keyboard()
+        await query.edit_message_text(f"Права пользователей ({_PERM_HELP}). Выбери человека:", reply_markup=kb)
+        return
+    target = int(parts[1])
+    if action == "permt":
+        set_perm(target, parts[2], parts[2] not in user_perms(target))
+    elif action == "permall":
+        for k in PERMS:
+            set_perm(target, k, parts[2] == "1")
+    text, kb = _perm_user_view(target)
+    await query.edit_message_text(text, reply_markup=kb)
+
+
 async def schedule_target_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
