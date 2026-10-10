@@ -68,7 +68,7 @@ def _perm_list_keyboard():
     rows = [
         [InlineKeyboardButton(f"{display_name(r)}  {_perm_summary(r['chat_id'])}", callback_data=f"permu:{r['chat_id']}")]
         for r in list_known_users()
-        if r["chat_type"] == "private"
+        if r["chat_id"] > 0  # личные чаты (у старых записей chat_type пустой)
     ]
     return InlineKeyboardMarkup(rows) if rows else None
 
