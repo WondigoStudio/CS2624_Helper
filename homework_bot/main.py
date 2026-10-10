@@ -123,6 +123,9 @@ from .handlers.tasks import (
 )
 from .handlers.schedule import (
     allow_schedule_cmd,
+    copyschedule_cmd,
+    copyschedule_go,
+    copyschedule_source_chosen,
     editschedule_field_chosen,
     editschedule_picked,
     editschedule_room_typed,
@@ -433,6 +436,9 @@ def main():
     app.add_handler(CommandHandler("call", call_cmd))
     app.add_handler(CommandHandler("set_report", set_report_cmd))
     app.add_handler(CommandHandler("sethere", sethere_cmd))
+    app.add_handler(CommandHandler("copyschedule", copyschedule_cmd))
+    app.add_handler(CallbackQueryHandler(copyschedule_source_chosen, pattern="^cpsrc:"))
+    app.add_handler(CallbackQueryHandler(copyschedule_go, pattern="^cpgo:"))
     app.add_handler(CommandHandler("allow_schedule", allow_schedule_cmd))
     app.add_handler(CallbackQueryHandler(toggle_schedule_permission_chosen, pattern="^toggle_sch_perm:"))
 
