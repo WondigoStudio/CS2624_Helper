@@ -1018,6 +1018,27 @@ _MIRROR_TABLES = [
 ]
 
 
+def export_all_tables() -> dict:
+    """{table: [row dicts]} for every table, for a downloadable backup.
+    LMS calendar links hold personal access tokens, so they are left out."""
+    out = {}
+    conn = db()
+    try:
+        for table in _MIRROR_TABLES:
+            try:
+                rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+            except Exception:
+                continue
+            items = [dict(r) for r in rows]
+            if table == "lms_feeds":
+                for it in items:
+                    it["url"] = "<скрыто>"
+            out[table] = items
+    finally:
+        conn.close()
+    return out
+
+
 def mirror_active_db_to(target_url: str) -> bool:
     if not USE_POSTGRES or not target_url:
         return False
