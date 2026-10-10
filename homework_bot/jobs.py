@@ -19,7 +19,10 @@ from .db import (
     bump_reminder_nag,
     db,
     get_all_enabled_reminders,
+    done_users_for,
+    first_lesson_times,
     get_chat_thread,
+    lessons_starting_at,
     get_lessons,
     get_reminders_awaiting_confirmation,
     get_room_photo,
@@ -152,17 +155,30 @@ async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка отправки опроса в {chat_id}: {e}")
 
 
-def _adaptive_target_time(chat_id: int, chat_type, offset_minutes: int, default_time: str) -> str:
-    """For a private chat with a filled-in schedule for today, the target
-    send time is offset_minutes before their first lesson. Everyone else
-    (groups, or a private chat with no lessons today / unknown chat_type
-    from before this feature existed) falls back to the same fixed time
-    used for everyone previously."""
-    if chat_type == "private" or (chat_type is None and chat_id > 0):
-        lessons = get_lessons(chat_id, now_kz().weekday())
-        if lessons:
-            return _time_minus_minutes(lessons[0]["time"], offset_minutes)
+def _adaptive_target_time(first_lesson, chat_id: int, chat_type, offset_minutes: int, default_time: str) -> str:
+    """For a private chat with lessons today, the target send time is
+    offset_minutes before their first lesson (first_lesson = its earliest
+    time today, or None). Everyone else (groups, a private chat with no
+    lessons today / unknown chat_type from before this feature existed)
+    falls back to the same fixed time used for everyone previously."""
+    is_private = chat_type == "private" or (chat_type is None and chat_id > 0)
+    if is_private and first_lesson:
+        return _time_minus_minutes(first_lesson, offset_minutes)
     return default_time
+
+
+def _chats_due_now(offset_minutes: int, default_time: str):
+    """Blocking (DB). Chats whose personal send time is this minute — a single
+    pass over the data for all chats instead of a query per chat."""
+    now = now_kz()
+    now_str = now.strftime("%H:%M")
+    firsts = first_lesson_times(now.weekday())
+    return [
+        row["chat_id"]
+        for row in list_known_users()
+        if _adaptive_target_time(firsts.get(row["chat_id"]), row["chat_id"], row["chat_type"],
+                                 offset_minutes, default_time) == now_str
+    ]
 
 
 async def check_adaptive_schedule(context: ContextTypes.DEFAULT_TYPE):
@@ -170,13 +186,9 @@ async def check_adaptive_schedule(context: ContextTypes.DEFAULT_TYPE):
     photos) once, at the moment that matches its target send time — fixed
     07:30 for groups, or SCHEDULE_OFFSET_MINUTES before that person's first
     lesson today for a private chat with a schedule."""
-    now_str = now_kz().strftime("%H:%M")
     weekday = now_kz().weekday()
-    for row in list_known_users():
-        chat_id = row["chat_id"]
-        target = _adaptive_target_time(chat_id, row["chat_type"], SCHEDULE_OFFSET_MINUTES, DEFAULT_SCHEDULE_TIME)
-        if target != now_str:
-            continue
+    due = await asyncio.to_thread(_chats_due_now, SCHEDULE_OFFSET_MINUTES, DEFAULT_SCHEDULE_TIME)
+    for chat_id in due:
         try:
             await send_morning_schedule_for_chat(context.bot, chat_id, weekday)
         except Exception as e:
@@ -189,35 +201,36 @@ async def check_adaptive_schedule(context: ContextTypes.DEFAULT_TYPE):
             logger.warning("Could not send morning weather to chat %s: %s", chat_id, e)
 
 
+def _task_reminder_texts(due_chat_ids, today_iso: str, tomorrow_iso: str) -> dict:
+    """Blocking (DB). {chat_id: reminder text} for the chats that have something
+    to be reminded about — tasks and everyone's personal "done" marks are
+    loaded once for all chats."""
+    rows = get_tasks(SHARED_TASKS_ID, only_undone=False, start=today_iso, end=tomorrow_iso)
+    rows = [r for r in rows if not r["my_done"]]  # not finished globally (legacy flag)
+    if not rows:
+        return {}
+    done_by = done_users_for([r["id"] for r in rows])
+    out = {}
+    for chat_id in due_chat_ids:
+        viewer = viewer_for_chat(chat_id)  # a person for private chats, None for groups
+        mine = [r for r in rows if viewer is None or viewer not in done_by.get(r["id"], ())]
+        if mine:
+            out[chat_id] = "🔔 Напоминание (общий список заданий):\n" + "\n".join(format_task_line(r) for r in mine)
+    return out
+
+
 async def check_adaptive_tasks(context: ContextTypes.DEFAULT_TYPE):
     """Runs every minute: sends the shared homework reminder to each chat
     once, at the moment that matches its target send time — fixed 08:00 for
     groups, or TASKS_OFFSET_MINUTES before that person's first lesson today
     for a private chat with a schedule."""
+    due = await asyncio.to_thread(_chats_due_now, TASKS_OFFSET_MINUTES, DEFAULT_TASKS_TIME)
+    if not due:
+        return
     today_iso = today_kz().isoformat()
     tomorrow_iso = (today_kz() + timedelta(days=1)).isoformat()
-    rows = get_tasks(SHARED_TASKS_ID, start=today_iso, end=tomorrow_iso)
-    if not rows:
-        return
-    text = "🔔 Напоминание (общий список заданий):\n" + "\n".join(format_task_line(r) for r in rows)
-
-    now_str = now_kz().strftime("%H:%M")
-    for row in list_known_users():
-        chat_id = row["chat_id"]
-        target = _adaptive_target_time(chat_id, row["chat_type"], TASKS_OFFSET_MINUTES, DEFAULT_TASKS_TIME)
-        if target != now_str:
-            continue
-        # Personal "done" marks: in a private chat leave out what this person
-        # already finished (groups have no single person, so see everything
-        # that isn't finished globally).
-        chat_rows = get_tasks(
-            SHARED_TASKS_ID, start=today_iso, end=tomorrow_iso, viewer_id=viewer_for_chat(chat_id)
-        )
-        if not chat_rows:
-            continue
-        chat_text = "🔔 Напоминание (общий список заданий):\n" + "\n".join(
-            format_task_line(r) for r in chat_rows
-        )
+    texts = await asyncio.to_thread(_task_reminder_texts, due, today_iso, tomorrow_iso)
+    for chat_id, chat_text in texts.items():
         try:
             for chunk in _chunk_text(chat_text):
                 await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=chunk)
@@ -295,7 +308,7 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
     weekday = now.weekday()
     now_iso = now.isoformat()
 
-    for row in get_all_enabled_reminders():
+    for row in await asyncio.to_thread(get_all_enabled_reminders):
         if row["repeat"] == "once":
             should_send = (
                 bool(row["remind_date"]) and not row["last_sent_date"]
@@ -327,9 +340,9 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
             logger.warning("Could not send reminder %s to chat %s: %s", row["id"], row["chat_id"], e)
             continue
 
-        mark_reminder_fired(row["id"], today_iso, now_iso)
+        await asyncio.to_thread(mark_reminder_fired, row["id"], today_iso, now_iso)
 
-    for row in get_reminders_awaiting_confirmation():
+    for row in await asyncio.to_thread(get_reminders_awaiting_confirmation):
         last_nag = row["last_nag_at"]
         if not last_nag:
             continue
@@ -381,7 +394,7 @@ async def backup_to_tertiary(context: ContextTypes.DEFAULT_TYPE):
 async def sync_lms_job(context: ContextTypes.DEFAULT_TYPE):
     """Pulls every connected person's LMS calendar into the shared task list.
     If someone's link stops working, tell them once (not every run)."""
-    feeds = {f["user_id"]: f for f in list_lms_feeds()}
+    feeds = {f["user_id"]: f for f in await asyncio.to_thread(list_lms_feeds)}
     if not feeds:
         return
     results = await asyncio.to_thread(sync_all_feeds)
@@ -412,7 +425,7 @@ async def check_task_deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
     instead of silently skipping it, same reasoning as check_reminders.
     deadline_notified guards against sending it more than once."""
     now = now_kz()
-    rows = get_tasks(SHARED_TASKS_ID, only_undone=True)
+    rows = await asyncio.to_thread(get_tasks, SHARED_TASKS_ID, True)
     for row in rows:
         if row["deadline_notified"]:
             continue
@@ -426,50 +439,48 @@ async def check_task_deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
             f"⏰ Через час дедлайн: [{SUBJECT_NAME[row['subject']]}] {row['title']} — "
             f"{due_dt.strftime('%d.%m.%Y %H:%M')}"
         )
-        finished = users_who_finished(row["id"])
-        for chat_id in all_chat_ids():
+        finished = await asyncio.to_thread(users_who_finished, row["id"])
+        for chat_id in await asyncio.to_thread(all_chat_ids):
             if chat_id in finished:
                 continue  # this person already marked it done — no need to nag
             try:
                 await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=text)
             except Exception as e:
                 logger.warning("Could not send deadline reminder to chat %s: %s", chat_id, e)
-        mark_task_deadline_notified(row["id"])
+        await asyncio.to_thread(mark_task_deadline_notified, row["id"])
 
 
 async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
-    """Runs every minute: for each chat, finds any lesson today whose start
+    """Runs every minute: finds every lesson today (any chat) whose start
     time is exactly LESSON_REMINDER_MINUTES from now, and sends a heads-up.
     Minute-granularity matching means each lesson fires once, at the minute
-    that lines up — no separate dedupe bookkeeping needed."""
+    that lines up — no separate dedupe bookkeeping needed. One query for all
+    chats; nothing else is touched on the minutes when nothing is due."""
     now = now_kz()
-    weekday = now.weekday()
     target_time = (now + timedelta(minutes=LESSON_REMINDER_MINUTES)).strftime("%H:%M")
+    rows = await asyncio.to_thread(lessons_starting_at, now.weekday(), target_time)
 
-    for chat_id in all_chat_ids():
-        rows = get_lessons(chat_id, weekday)
-        for r in rows:
-            if r["time"] != target_time:
-                continue
-            text = (
-                f"⏰ Через {LESSON_REMINDER_MINUTES} минут: "
-                f"[{SUBJECT_NAME[r['subject']]}] в {r['time']}, каб. {r['room']}"
-            )
-            try:
-                await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=text)
-            except Exception as e:
-                logger.warning("Could not send lesson reminder to chat %s: %s", chat_id, e)
-                continue
+    for r in rows:
+        chat_id = r["chat_id"]
+        text = (
+            f"⏰ Через {LESSON_REMINDER_MINUTES} минут: "
+            f"[{SUBJECT_NAME[r['subject']]}] в {r['time']}, каб. {r['room']}"
+        )
+        try:
+            await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=text)
+        except Exception as e:
+            logger.warning("Could not send lesson reminder to chat %s: %s", chat_id, e)
+            continue
 
-            photo = get_room_photo(chat_id, r["room"])
-            if not photo:
-                continue
-            file_id, kind = photo
-            try:
-                caption = f"📍 Кабинет {r['room']}"
-                if kind == "document":
-                    await context.bot.send_document(chat_id=chat_id, **_topic(chat_id), document=file_id, caption=caption)
-                else:
-                    await context.bot.send_photo(chat_id=chat_id, **_topic(chat_id), photo=file_id, caption=caption)
-            except Exception as e:
-                logger.warning("Could not send room photo reminder to chat %s: %s", chat_id, e)
+        photo = await asyncio.to_thread(get_room_photo, chat_id, r["room"])
+        if not photo:
+            continue
+        file_id, kind = photo
+        try:
+            caption = f"📍 Кабинет {r['room']}"
+            if kind == "document":
+                await context.bot.send_document(chat_id=chat_id, **_topic(chat_id), document=file_id, caption=caption)
+            else:
+                await context.bot.send_photo(chat_id=chat_id, **_topic(chat_id), photo=file_id, caption=caption)
+        except Exception as e:
+            logger.warning("Could not send room photo reminder to chat %s: %s", chat_id, e)
