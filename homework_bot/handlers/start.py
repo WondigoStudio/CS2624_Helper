@@ -14,7 +14,7 @@ from ..config import (
 )
 from ..db import register_chat
 from ..states import LESSON_REMINDER_MINUTES
-from ..utils import SCHEDULE_OFFSET_MINUTES, TASKS_OFFSET_MINUTES
+from ..utils import SCHEDULE_OFFSET_MINUTES, TASKS_OFFSET_MINUTES, _chunk_text
 
 
 async def app_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -85,6 +85,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/users — (только для админа) список пользователей, писавших боту\n"
         "/viewschedule — (только для админа) посмотреть расписание любого "
         "пользователя\n"
+        "/lmsusers — (только для админа) кто подключил календарь LMS (без ссылок)\n"
         "/dbstatus — (только для админа) какая база данных сейчас активна и "
         "настроено ли резервирование\n"
         "/backupnow — (только для админа) перенести данные в резервные базы "
@@ -122,4 +123,5 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "«обнять», «погладить», «ударить», «поцеловать» и т.п. (всего 30 штук) — "
         "пришлю шуточную сценку с вашими именами. /topactions — топ по чату."
     )
-    await update.message.reply_text(text)
+    for chunk in _chunk_text(text):
+        await update.message.reply_text(chunk)
