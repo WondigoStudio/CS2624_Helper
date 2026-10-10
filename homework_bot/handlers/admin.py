@@ -13,6 +13,7 @@ from ..config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3
 from ..constants import WEEKDAY_EMOJI, WEEKDAY_NAMES_FULL_RU
 from ..db import (
     display_name,
+    export_all_tables,
     get_chat_info,
     get_db_status,
     get_lessons,
@@ -191,3 +192,25 @@ async def lmsusers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mark = "⚠️ ссылка не работает" if f["error_notified"] else "✅"
         lines.append(f"• {who} — {mark}, обновлено {last}")
     await update.message.reply_text(f"Подключили календарь LMS ({len(feeds)}):\n" + "\n".join(lines))
+
+
+async def exportdb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: download the whole database as a JSON file (private chat only)."""
+    import io
+    import json
+
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда доступна только администраторам бота.")
+        return
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Бэкап содержит данные всех пользователей — запроси его в личке с ботом.")
+        return
+    data = await asyncio.to_thread(export_all_tables)
+    payload = json.dumps(
+        {"exported_at": now_kz().isoformat(), "tables": data}, ensure_ascii=False, indent=1, default=str
+    ).encode("utf-8")
+    buf = io.BytesIO(payload)
+    buf.name = f"homework_bot_backup_{now_kz().strftime('%Y-%m-%d_%H-%M')}.json"
+    counts = ", ".join(f"{t}: {len(r)}" for t, r in data.items() if r)
+    await update.message.reply_document(buf, caption=f"💾 Бэкап базы. Строк по таблицам — {counts}"[:1000])
