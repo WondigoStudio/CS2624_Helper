@@ -8,6 +8,24 @@ from telegram.ext import ContextTypes
 from ..config import GROQ_API_KEY, GROQ_WHISPER_MODEL, logger, requests
 
 
+def _quote(text: str, first: bool = False) -> str:
+    body = f"<blockquote expandable>{html.escape(text)}</blockquote>"
+    return f"🗣 Транскрипция:\n{body}" if first else body
+
+
+def _split_text(text: str, limit: int) -> list:
+    """Cuts on spaces/line breaks so words are not broken in half."""
+    parts = []
+    while len(text) > limit:
+        cut = max(text.rfind("\n", 0, limit), text.rfind(" ", 0, limit))
+        if cut < limit // 2:
+            cut = limit
+        parts.append(text[:cut].rstrip())
+        text = text[cut:].lstrip()
+    parts.append(text)
+    return parts
+
+
 # ---------------------------------------------------------------------------
 # Voice/audio/video transcription (Groq's free Whisper API)
 # ---------------------------------------------------------------------------
@@ -57,13 +75,15 @@ async def handle_transcribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not text:
             await status.edit_text("Не удалось разобрать речь — похоже, там тишина или шум.")
             return
-        quoted = f"🗣 Транскрипция:\n<blockquote>{html.escape(text)}</blockquote>"
-        await status.edit_text(quoted, parse_mode=ParseMode.HTML)
+        # A collapsible quote: long transcripts show a few lines with "expand" instead of a wall of text.
+        # (Telegram caps a message at 4096 characters, so a very long text goes out in several messages.)
+        parts = _split_text(text, 3500)
+        await status.edit_text(_quote(parts[0], first=True), parse_mode=ParseMode.HTML)
+        for extra in parts[1:]:
+            await msg.reply_text(_quote(extra), parse_mode=ParseMode.HTML)
     except requests.exceptions.RequestException as e:
         logger.warning("Groq transcription request failed: %s", e)
         await status.edit_text("Не получилось распознать — сервис транскрипции сейчас недоступен.")
     except Exception as e:
         logger.warning("Transcription failed: %s", e)
         await status.edit_text("Не получилось распознать это сообщение.")
-
-
