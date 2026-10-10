@@ -395,8 +395,26 @@ async def schedule_day_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 # ---------------------------------------------------------------------------
-# /copyschedule — take someone else's timetable as a starting point
+# /copyschedule — copy a timetable (yours or someone else's) to another person
 # ---------------------------------------------------------------------------
+def _chat_label(chat_id: int, here: int) -> str:
+    if chat_id == here:
+        return "меня (этот чат)"
+    for u in list_known_users():
+        if u["chat_id"] == chat_id:
+            return display_name(u)
+    return f"id{chat_id}"
+
+
+def _copy_mode_keyboard(src: int, dst: int):
+    mine = len(get_lessons(dst))
+    rows = [[InlineKeyboardButton("➕ Добавить к существующему", callback_data=f"cpgo:{src}:{dst}:add")]]
+    if mine:
+        rows.append([InlineKeyboardButton(f"♻️ Заменить ({mine} пар)", callback_data=f"cpgo:{src}:{dst}:replace")])
+    rows.append([InlineKeyboardButton("✖️ Отмена", callback_data="cpgo:0:0:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
 async def copyschedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     if not is_schedule_allowed(update.effective_user.id):
@@ -405,17 +423,15 @@ async def copyschedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     here = update.effective_chat.id
     buttons = []
     for u in list_known_users():
-        if u["chat_id"] == here or u["chat_type"] != "private":
-            continue
         n = len(get_lessons(u["chat_id"]))
         if n:
-            buttons.append([InlineKeyboardButton(f"{display_name(u)} — {n} пар", callback_data=f"cpsrc:{u['chat_id']}")])
+            name = "Моё расписание" if u["chat_id"] == here else display_name(u)
+            buttons.append([InlineKeyboardButton(f"{name} — {n} пар", callback_data=f"cpsrc:{u['chat_id']}")])
     if not buttons:
-        await update.message.reply_text("Пока ни у кого нет расписания, которое можно скопировать.")
+        await update.message.reply_text("Пока нет ни одного расписания, которое можно скопировать.")
         return
-    where = "в твоё расписание" if update.effective_chat.type == "private" else "в расписание этой группы"
     await update.message.reply_text(
-        f"Чьё расписание скопировать {where}? Потом его можно поправить через /editschedule.",
+        "Чьё расписание копируем? (Потом его можно поправить через /editschedule.)",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
@@ -425,19 +441,43 @@ async def copyschedule_source_chosen(update: Update, context: ContextTypes.DEFAU
     await q.answer()
     if not is_schedule_allowed(q.from_user.id):
         return
-    src = int(q.data.split(":")[1])
-    lessons = get_lessons(src)
-    if not lessons:
+    src, here = int(q.data.split(":")[1]), q.message.chat.id
+    if not get_lessons(src):
         await q.edit_message_text("У этого человека расписание пустое.")
         return
-    mine = len(get_lessons(q.message.chat.id))
-    rows = [[InlineKeyboardButton("➕ Добавить к моему", callback_data=f"cpgo:{src}:add")]]
-    if mine:
-        rows.append([InlineKeyboardButton(f"♻️ Заменить моё ({mine} пар)", callback_data=f"cpgo:{src}:replace")])
-    rows.append([InlineKeyboardButton("✖️ Отмена", callback_data="cpgo:0:cancel")])
+    if not is_admin(q.from_user.id):
+        # обычный участник копирует только себе
+        if src == here:
+            await q.edit_message_text("Это и есть твоё расписание — выбери чужое.")
+            return
+        await q.edit_message_text(
+            f"Скопировать расписание ({len(get_lessons(src))} пар) себе?", reply_markup=_copy_mode_keyboard(src, here)
+        )
+        return
+    rows = []
+    if src != here:
+        rows.append([InlineKeyboardButton("Мне (этот чат)", callback_data=f"cptgt:{src}:{here}")])
+    for u in list_known_users():
+        if u["chat_id"] not in (src, here):
+            rows.append([InlineKeyboardButton(display_name(u), callback_data=f"cptgt:{src}:{u['chat_id']}")])
+    if not rows:
+        await q.edit_message_text("Некому копировать: других пользователей нет.")
+        return
     await q.edit_message_text(
-        f"Скопировать {len(lessons)} пар (и фото кабинетов)?",
-        reply_markup=InlineKeyboardMarkup(rows),
+        f"Копируем {'твоё расписание' if src == here else 'расписание «' + _chat_label(src, here) + '»'} — кому?", reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+
+async def copyschedule_target_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not is_admin(q.from_user.id):
+        return
+    _, src, dst = q.data.split(":")
+    src, dst = int(src), int(dst)
+    await q.edit_message_text(
+        f"Скопировать {len(get_lessons(src))} пар (и фото кабинетов) → {_chat_label(dst, q.message.chat.id)}?",
+        reply_markup=_copy_mode_keyboard(src, dst),
     )
 
 
@@ -446,13 +486,15 @@ async def copyschedule_go(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     q = update.callback_query
     await q.answer()
-    _, src, mode = q.data.split(":")
+    _, src, dst, mode = q.data.split(":")
     if mode == "cancel":
         await q.edit_message_text("Отменено.")
         return
-    if not is_schedule_allowed(q.from_user.id):
+    uid, here = q.from_user.id, q.message.chat.id
+    src, dst = int(src), int(dst)
+    # обычным участникам — только в свой чат; чужим назначением могут распоряжаться админы
+    if not is_schedule_allowed(uid) or (dst != here and not is_admin(uid)) or src == dst:
         return
-    src, dst = int(src), q.message.chat.id
     lessons = get_lessons(src)
     if mode == "replace":
         for old in get_lessons(dst):
@@ -467,15 +509,13 @@ async def copyschedule_go(update: Update, context: ContextTypes.DEFAULT_TYPE):
         have.add(key)
         added += 1
     photos = 0
-    mine = set(list_room_photos(dst))
+    existing = set(list_room_photos(dst))
     for room in list_room_photos(src):
-        if room in mine:
+        if room in existing:
             continue
         p = get_room_photo(src, room)
         if p:
             set_room_photo(dst, room, p[0], p[1])
             photos += 1
-    await q.edit_message_text(
-        f"✅ Скопировано пар: {added}, фото кабинетов: {photos}.\n"
-        "Посмотреть — /schedule_week, поправить — /editschedule."
-    )
+    tail = "Поправить — /editschedule." if dst == here else "Человек увидит его в своём /schedule_week; править может он сам или админ."
+    await q.edit_message_text(f"✅ Скопировано пар: {added}, фото кабинетов: {photos} → {_chat_label(dst, here)}.\n{tail}")
