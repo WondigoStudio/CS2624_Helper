@@ -1,540 +1,216 @@
-"""Application entry point: builds the Telegram Application, registers every
-command/conversation/callback handler, schedules the background jobs, and
-starts polling.
+"""Admin-only diagnostic commands: /users, /viewschedule, /testmorning
+(fires the adaptive morning schedule send immediately, for testing),
+/dbstatus and /backupnow (multi-database failover status/control)."""
 
-Run with:  python -m homework_bot.main
-"""
+import asyncio
+import html
 
-from datetime import time as dtime
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.ext import ContextTypes
 
-from telegram import MenuButtonWebApp, WebAppInfo
-from telegram.error import Conflict
-
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ConversationHandler,
-    InlineQueryHandler,
-    MessageHandler,
-    filters,
+from ..config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3
+from ..constants import WEEKDAY_EMOJI, WEEKDAY_NAMES_FULL_RU
+from ..db import (
+    display_name,
+    export_all_tables,
+    get_chat_info,
+    get_db_status,
+    get_lessons,
+    init_db,
+    list_known_users,
+    list_lms_feeds,
+    mirror_active_db_to,
+    register_chat,
 )
-
-from .config import (
-    BOT_TOKEN,
-    GROQ_API_KEY,
-    MEDIA_DOWNLOAD_ENABLED,
-    POLL_HOUR,
-    POLL_MINUTE,
-    TIMEZONE,
-    TRANSCRIBE_ENABLED,
-    TRANSLATE_ENABLED,
-    WEBAPP_URL,
-    logger,
-    requests,
-    start_health_check_server,
-)
-from .constants import ACTIONS
-from .db import init_db
-from .states import (
-    BDAY_DATE,
-    BDAY_IMPORT,
-    LMS_URL,
-    BDAY_TARGET,
-    CHOOSING_SUBJECT,
-    CHOOSING_TARGET_USER,
-    EDIT_LESSON_FIELD,
-    EDIT_LESSON_PICK,
-    EDIT_LESSON_ROOM,
-    EDIT_LESSON_SUBJECT,
-    EDIT_LESSON_TIME,
-    EDIT_LESSON_WEEKDAY,
-    EDIT_TASK_ATTACHMENT,
-    EDIT_TASK_DATE,
-    EDIT_TASK_DESCRIPTION,
-    EDIT_TASK_FIELD,
-    EDIT_TASK_PICK,
-    EDIT_TASK_SUBJECT,
-    EDIT_TASK_TIME,
-    EDIT_TASK_TITLE,
-    PHOTO_ROOM_NAME,
-    PHOTO_TARGET_USER,
-    PHOTO_WAITING,
-    REMIND_CUSTOM_DATE,
-    REMIND_CUSTOM_TIME,
-    REMIND_DAILY_TIME,
-    REMIND_TEXT,
-    REMIND_WEEKLY_DAY,
-    REMIND_WEEKLY_TIME,
-    REMIND_WHEN,
-    SCH_ROOM,
-    SCH_SUBJECT,
-    SCH_TIME,
-    SCH_WEEKDAY,
-    TYPING_ATTACHMENT,
-    TYPING_DATE,
-    TYPING_DESCRIPTION,
-    TYPING_TIME,
-    TYPING_TITLE,
-)
-
-from .handlers.start import app_cmd, start
-from .handlers.weather import weather_cmd
-from .handlers.lms import lms_cancel, lms_file_received, lms_start, lms_url_typed, lmsoff_cmd, lmssync_cmd
-from .handlers.tasks import (
-    add_attachment_document,
-    add_attachment_done,
-    add_attachment_invalid,
-    add_attachment_photo,
-    add_cancel,
-    add_date_typed,
-    add_description_skip,
-    add_description_typed,
-    add_start,
-    add_subject_chosen,
-    add_time_skip,
-    add_time_typed,
-    add_title_typed,
-    all_cmd,
-    delete_chosen,
-    delete_cmd,
-    done_chosen,
-    done_cmd,
-    edittask_attachment_clear,
-    edittask_attachment_document,
-    edittask_attachment_done,
-    edittask_attachment_invalid,
-    edittask_attachment_photo,
-    edittask_date_typed,
-    edittask_description_clear,
-    edittask_description_typed,
-    edittask_field_chosen,
-    edittask_picked,
-    edittask_start,
-    edittask_subject_chosen,
-    edittask_time_skip,
-    edittask_time_typed,
-    edittask_title_typed,
-    taskdesc_chosen,
-    taskfile_chosen,
-    taskfile_cmd,
-    today_cmd,
-    week_cmd,
-)
-from .handlers.schedule import (
-    allow_schedule_cmd,
-    copyschedule_cmd,
-    copyschedule_go,
-    copyschedule_source_chosen,
-    editschedule_field_chosen,
-    editschedule_picked,
-    editschedule_room_typed,
-    editschedule_start,
-    editschedule_subject_chosen,
-    editschedule_time_typed,
-    editschedule_weekday_chosen,
-    schedule_add_start,
-    schedule_cancel,
-    schedule_day_chosen,
-    schedule_day_start,
-    schedule_delete_chosen,
-    schedule_delete_cmd,
-    schedule_room_typed,
-    schedule_subject_chosen,
-    schedule_target_chosen,
-    schedule_time_typed,
-    schedule_today_cmd,
-    schedule_week_cmd,
-    schedule_weekday_chosen,
-    toggle_schedule_permission_chosen,
-)
-from .handlers.roomphotos import (
-    addroomphoto_document_received,
-    addroomphoto_not_a_photo,
-    addroomphoto_photo_received,
-    addroomphoto_room_typed,
-    addroomphoto_start,
-    addroomphoto_target_chosen,
-    roomphotos_cmd,
-    testphoto_chosen,
-    testphoto_cmd,
-)
-from .handlers.calendar import calendar_cmd, calendar_day_tap, calendar_nav, calendar_noop
-from .handlers.admin import backupnow_cmd, dbstatus_cmd, lmsusers_cmd, testmorning_cmd, users_cmd, viewschedule_chosen, viewschedule_cmd
-from .handlers.social import call_cmd, set_report_cmd, topactions_cmd, track_group_members, sethere_cmd
-from .handlers.transcribe import handle_transcribe
-from .handlers.translate import handle_translate_reply, inline_translate
-from .handlers.media import handle_media_link, youtube_download_chosen
-from .handlers.reminders import (
-    remind_cancel,
-    remind_custom_date_typed,
-    remind_custom_time_typed,
-    remind_daily_time_typed,
-    remind_start,
-    remind_text_typed,
-    remind_weekly_day_chosen,
-    remind_weekly_time_typed,
-    remind_when_chosen,
-    reminder_confirm_chosen,
-    reminder_delete_chosen,
-    reminder_snooze_chosen,
-    reminders_cmd,
-)
-from .handlers.birthdays import (
-    addbirthday_cancel,
-    addbirthday_date_typed,
-    addbirthday_start,
-    addbirthday_target_chosen,
-    birthday_delete_chosen,
-    birthday_filter_chosen,
-    birthdays_cmd,
-    importbirthdays_cancel,
-    importbirthdays_start,
-    importbirthdays_text,
-    nextbirthday_cmd,
-)
-
-from .jobs import (
-    backup_to_secondary,
-    backup_to_tertiary,
-    check_adaptive_schedule,
-    check_adaptive_tasks,
-    check_lesson_reminders,
-    check_reminders,
-    check_task_deadline_reminders,
-    send_morning_poll_job,
-    sync_lms_job,
-)
+from ..formatting import format_lessons_block
+from ..jobs import send_morning_schedule_for_chat
+from ..permissions import is_admin
+from ..utils import now_kz
 
 
-def main():
-    if not BOT_TOKEN:
-        raise SystemExit(
-            "BOT_TOKEN is not set. Set it as an environment variable "
-            "(locally: export BOT_TOKEN=...; on Render: Environment tab)."
+async def backupnow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Runs the mirror-to-backup-DB(s) immediately instead of waiting for
+    the scheduled job — mainly useful right after setting up
+    DATABASE_URL_BACKUP2/3 for the first time, to seed them with the
+    existing data straight away rather than waiting up to 6h/overnight."""
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text(
+            "Эта команда доступна только администраторам бота."
         )
-    init_db()
-    start_health_check_server()
-    async def _post_init(application):
-        # Puts an "Открыть" button next to the message box in private chats
-        # that launches the Mini App. Failure here must never stop the bot.
-        if not WEBAPP_URL:
-            return
+        return
+    status = get_db_status()
+    if not status["using_postgres"]:
+        await update.message.reply_text("База — локальный SQLite-файл, переносить некуда.")
+        return
+    targets = [("резервную №2", DATABASE_URL_BACKUP2), ("резервную №3", DATABASE_URL_BACKUP3)]
+    targets = [(label, url) for label, url in targets if url]
+    if not targets:
+        await update.message.reply_text(
+            "DATABASE_URL_BACKUP2/3 не заданы — нечего заполнять."
+        )
+        return
+    status_msg = await update.message.reply_text("⏳ Переношу данные…")
+    results = []
+    for label, url in targets:
         try:
-            await application.bot.set_chat_menu_button(
-                menu_button=MenuButtonWebApp(text="Открыть", web_app=WebAppInfo(url=WEBAPP_URL))
-            )
-            logger.info("Mini App menu button set to %s", WEBAPP_URL)
+            await asyncio.to_thread(init_db, url)
+            ok = await asyncio.to_thread(mirror_active_db_to, url)
+            results.append(f"✅ {label} — готово" if ok else f"⚠️ {label} — пропущено")
         except Exception as e:
-            logger.warning("Could not set Mini App menu button: %s", e)
+            results.append(f"❌ {label} — ошибка: {e}")
+    await status_msg.edit_text("\n".join(results))
 
-    async def _on_error(update, context):
-        # "Conflict" = another copy of this bot is polling with the same token
-        # (typically the old instance during a deploy, or a second service /
-        # a computer still running it). One short line instead of a full
-        # traceback every second.
-        if isinstance(context.error, Conflict):
-            logger.warning(
-                "Telegram Conflict: another instance is polling with the same BOT_TOKEN. "
-                "Harmless for a minute during a deploy; if it persists, stop the other copy."
-            )
-            return
-        logger.error("Unhandled error", exc_info=context.error)
 
-    app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
-    app.add_error_handler(_on_error)
-
-    add_conv = ConversationHandler(
-        entry_points=[CommandHandler("add", add_start)],
-        states={
-            CHOOSING_SUBJECT: [CallbackQueryHandler(add_subject_chosen, pattern="^addsub:")],
-            TYPING_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_title_typed)],
-            TYPING_DESCRIPTION: [
-                CallbackQueryHandler(add_description_skip, pattern="^nodesc$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_description_typed),
-            ],
-            TYPING_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_date_typed)],
-            TYPING_TIME: [
-                CallbackQueryHandler(add_time_skip, pattern="^notime$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_time_typed),
-            ],
-            TYPING_ATTACHMENT: [
-                CallbackQueryHandler(add_attachment_done, pattern="^attachdone$"),
-                MessageHandler(filters.PHOTO, add_attachment_photo),
-                MessageHandler(filters.Document.ALL, add_attachment_document),
-                MessageHandler(~filters.COMMAND, add_attachment_invalid),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", add_cancel)],
-    )
-
-    schedule_add_conv = ConversationHandler(
-        entry_points=[CommandHandler("schedule_add", schedule_add_start)],
-        states={
-            CHOOSING_TARGET_USER: [CallbackQueryHandler(schedule_target_chosen, pattern="^schtgt:")],
-            SCH_WEEKDAY: [CallbackQueryHandler(schedule_weekday_chosen, pattern="^schwd:")],
-            SCH_SUBJECT: [CallbackQueryHandler(schedule_subject_chosen, pattern="^schsub:")],
-            SCH_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_time_typed)],
-            SCH_ROOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_room_typed)],
-        },
-        fallbacks=[CommandHandler("cancel", schedule_cancel)],
-    )
-
-    addroomphoto_conv = ConversationHandler(
-        entry_points=[CommandHandler("addroomphoto", addroomphoto_start)],
-        states={
-            PHOTO_TARGET_USER: [CallbackQueryHandler(addroomphoto_target_chosen, pattern="^phtgt:")],
-            PHOTO_ROOM_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addroomphoto_room_typed)],
-            PHOTO_WAITING: [
-                MessageHandler(filters.PHOTO, addroomphoto_photo_received),
-                MessageHandler(filters.Document.IMAGE, addroomphoto_document_received),
-                MessageHandler(~filters.COMMAND, addroomphoto_not_a_photo),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", schedule_cancel)],
-    )
-
-    edittask_conv = ConversationHandler(
-        entry_points=[CommandHandler("edittask", edittask_start)],
-        states={
-            EDIT_TASK_PICK: [CallbackQueryHandler(edittask_picked, pattern="^edittask:")],
-            EDIT_TASK_FIELD: [CallbackQueryHandler(edittask_field_chosen, pattern="^editfield:")],
-            EDIT_TASK_SUBJECT: [CallbackQueryHandler(edittask_subject_chosen, pattern="^edittasksub:")],
-            EDIT_TASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_title_typed)],
-            EDIT_TASK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_date_typed)],
-            EDIT_TASK_TIME: [
-                CallbackQueryHandler(edittask_time_skip, pattern="^edittasktime:none$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_time_typed),
-            ],
-            EDIT_TASK_DESCRIPTION: [
-                CallbackQueryHandler(edittask_description_clear, pattern="^edittaskdesc:none$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_description_typed),
-            ],
-            EDIT_TASK_ATTACHMENT: [
-                CallbackQueryHandler(edittask_attachment_clear, pattern="^edittaskattach:clear$"),
-                CallbackQueryHandler(edittask_attachment_done, pattern="^edittaskattach:done$"),
-                MessageHandler(filters.PHOTO, edittask_attachment_photo),
-                MessageHandler(filters.Document.ALL, edittask_attachment_document),
-                MessageHandler(~filters.COMMAND, edittask_attachment_invalid),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", add_cancel)],
-    )
-
-    editschedule_conv = ConversationHandler(
-        entry_points=[CommandHandler("editschedule", editschedule_start)],
-        states={
-            EDIT_LESSON_PICK: [CallbackQueryHandler(editschedule_picked, pattern="^editlesson:")],
-            EDIT_LESSON_FIELD: [CallbackQueryHandler(editschedule_field_chosen, pattern="^editlfield:")],
-            EDIT_LESSON_WEEKDAY: [CallbackQueryHandler(editschedule_weekday_chosen, pattern="^editlwd:")],
-            EDIT_LESSON_SUBJECT: [CallbackQueryHandler(editschedule_subject_chosen, pattern="^editlsub:")],
-            EDIT_LESSON_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, editschedule_time_typed)],
-            EDIT_LESSON_ROOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, editschedule_room_typed)],
-        },
-        fallbacks=[CommandHandler("cancel", schedule_cancel)],
-    )
-
-    remind_conv = ConversationHandler(
-        entry_points=[CommandHandler("remind", remind_start)],
-        states={
-            REMIND_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_text_typed)],
-            REMIND_WHEN: [CallbackQueryHandler(remind_when_chosen, pattern="^remwhen:")],
-            REMIND_DAILY_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_daily_time_typed)],
-            REMIND_WEEKLY_DAY: [CallbackQueryHandler(remind_weekly_day_chosen, pattern="^remwd:")],
-            REMIND_WEEKLY_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_weekly_time_typed)],
-            REMIND_CUSTOM_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_custom_date_typed)],
-            REMIND_CUSTOM_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_custom_time_typed)],
-        },
-        fallbacks=[CommandHandler("cancel", remind_cancel)],
-    )
-
-    addbirthday_conv = ConversationHandler(
-        entry_points=[CommandHandler("addbirthday", addbirthday_start)],
-        states={
-            BDAY_TARGET: [CallbackQueryHandler(addbirthday_target_chosen, pattern="^bdaytarget:")],
-            BDAY_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addbirthday_date_typed)],
-        },
-        fallbacks=[CommandHandler("cancel", addbirthday_cancel)],
-    )
-
-    lms_conv = ConversationHandler(
-        entry_points=[CommandHandler("lms", lms_start)],
-        states={
-            LMS_URL: [
-                MessageHandler(filters.Document.ALL, lms_file_received),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, lms_url_typed),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", lms_cancel)],
-    )
-
-    importbirthdays_conv = ConversationHandler(
-        entry_points=[CommandHandler("importbirthdays", importbirthdays_start)],
-        states={
-            BDAY_IMPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, importbirthdays_text)],
-        },
-        fallbacks=[CommandHandler("cancel", importbirthdays_cancel)],
-    )
-
-    # ----------------------------------------------------
-    # Основные хэндлеры бота
-    # ----------------------------------------------------
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("app", app_cmd))
-    app.add_handler(CommandHandler("weather", weather_cmd))
-    app.add_handler(add_conv)
-    app.add_handler(schedule_add_conv)
-    app.add_handler(addroomphoto_conv)
-    app.add_handler(edittask_conv)
-    app.add_handler(editschedule_conv)
-    app.add_handler(remind_conv)
-    app.add_handler(CommandHandler("reminders", reminders_cmd))
-    app.add_handler(CallbackQueryHandler(reminder_delete_chosen, pattern="^remdel:"))
-    app.add_handler(CallbackQueryHandler(reminder_snooze_chosen, pattern="^remsnooze:"))
-    app.add_handler(CallbackQueryHandler(reminder_confirm_chosen, pattern="^remconfirm:"))
-    app.add_handler(addbirthday_conv)
-    app.add_handler(importbirthdays_conv)
-    app.add_handler(CommandHandler("birthdays", birthdays_cmd))
-    app.add_handler(CommandHandler("nextbirthday", nextbirthday_cmd))
-    app.add_handler(CallbackQueryHandler(birthday_delete_chosen, pattern="^bdaydel:"))
-    app.add_handler(CallbackQueryHandler(birthday_filter_chosen, pattern="^bdayfilter:"))
-    app.add_handler(CommandHandler("today", today_cmd))
-    app.add_handler(CommandHandler("week", week_cmd))
-    app.add_handler(CommandHandler("all", all_cmd))
-    app.add_handler(CommandHandler("done", done_cmd))
-    app.add_handler(CallbackQueryHandler(done_chosen, pattern="^done:"))
-    app.add_handler(CommandHandler("delete", delete_cmd))
-    app.add_handler(CallbackQueryHandler(delete_chosen, pattern="^del:"))
-    app.add_handler(CommandHandler("taskfile", taskfile_cmd))
-    app.add_handler(CallbackQueryHandler(taskfile_chosen, pattern="^taskfile:"))
-    app.add_handler(CallbackQueryHandler(taskdesc_chosen, pattern="^taskdesc:"))
-    app.add_handler(CommandHandler("calendar", calendar_cmd))
-    app.add_handler(CallbackQueryHandler(calendar_nav, pattern="^cal:"))
-    app.add_handler(CallbackQueryHandler(calendar_day_tap, pattern="^day:"))
-    app.add_handler(CallbackQueryHandler(calendar_noop, pattern="^noop$"))
-    app.add_handler(CommandHandler("schedule", schedule_today_cmd))
-    app.add_handler(CommandHandler("schedule_week", schedule_week_cmd))
-    app.add_handler(CommandHandler("schedule_day", schedule_day_start))
-    app.add_handler(CallbackQueryHandler(schedule_day_chosen, pattern="^schday:"))
-    app.add_handler(CommandHandler("schedule_delete", schedule_delete_cmd))
-    app.add_handler(CallbackQueryHandler(schedule_delete_chosen, pattern="^schdel:"))
-    app.add_handler(CommandHandler("roomphotos", roomphotos_cmd))
-    app.add_handler(CommandHandler("users", users_cmd))
-    app.add_handler(CommandHandler("dbstatus", dbstatus_cmd))
-    app.add_handler(lms_conv)
-    app.add_handler(CommandHandler("lmsoff", lmsoff_cmd))
-    app.add_handler(CommandHandler("lmssync", lmssync_cmd))
-    app.add_handler(CommandHandler("lmsusers", lmsusers_cmd))
-    app.add_handler(CommandHandler("backupnow", backupnow_cmd))
-    app.add_handler(CommandHandler("viewschedule", viewschedule_cmd))
-    app.add_handler(CallbackQueryHandler(viewschedule_chosen, pattern="^viewsch:"))
-    app.add_handler(CommandHandler("testphoto", testphoto_cmd))
-    app.add_handler(CallbackQueryHandler(testphoto_chosen, pattern="^testph:"))
-    app.add_handler(CommandHandler("testmorning", testmorning_cmd))
-
-    # --- НОВЫЕ ХЭНДЛЕРЫ ---
-    app.add_handler(CommandHandler("call", call_cmd))
-    app.add_handler(CommandHandler("set_report", set_report_cmd))
-    app.add_handler(CommandHandler("sethere", sethere_cmd))
-    app.add_handler(CommandHandler("copyschedule", copyschedule_cmd))
-    app.add_handler(CallbackQueryHandler(copyschedule_source_chosen, pattern="^cpsrc:"))
-    app.add_handler(CallbackQueryHandler(copyschedule_go, pattern="^cpgo:"))
-    app.add_handler(CommandHandler("allow_schedule", allow_schedule_cmd))
-    app.add_handler(CallbackQueryHandler(toggle_schedule_permission_chosen, pattern="^toggle_sch_perm:"))
-
-    # ----------------------------------------------------
-    # Модули расширений (Голос / Перевод)
-    # ----------------------------------------------------
-    # Автоматическое отслеживание ВСЕХ участников группы (для созыва)
-    app.add_handler(
-        MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, track_group_members),
-        group=-1
-    )
-    if TRANSCRIBE_ENABLED and requests is not None:
-        app.add_handler(
-            MessageHandler(
-                filters.VOICE | filters.AUDIO | filters.VIDEO_NOTE | filters.VIDEO,
-                handle_transcribe,
-            )
+async def dbstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text(
+            "Эта команда доступна только администраторам бота."
         )
-        logger.info("Voice/audio/video transcription enabled (Groq).")
-    elif GROQ_API_KEY and requests is None:
-        logger.warning(
-            "GROQ_API_KEY is set but the 'requests' package isn't installed — "
-            "transcription is disabled. Run: pip install -r requirements.txt"
+        return
+    status = get_db_status()
+    if not status["using_postgres"]:
+        await update.message.reply_text("База — локальный SQLite-файл, резервирование не настроено.")
+        return
+    labels = ["основная (DATABASE_URL)", "резервная №2", "резервная №3"]
+    active_label = labels[status["active_index"]] if status["active_index"] < len(labels) else "?"
+    backups = []
+    if DATABASE_URL_BACKUP2:
+        backups.append("№2 настроена")
+    if DATABASE_URL_BACKUP3:
+        backups.append("№3 настроена")
+    backups_text = ", ".join(backups) if backups else "не настроены"
+    warning = ""
+    if status["active_index"] != 0:
+        warning = (
+            "\n⚠️ Сейчас работаем не на основной базе — это значит основная была "
+            "недоступна. Данные, записанные с момента переключения, нужно будет "
+            "вручную перенести обратно, когда основная снова заработает."
+        )
+    await update.message.reply_text(
+        f"Сейчас активна: {active_label}\nВсего баз в цепочке: {status['configured_count']}\n"
+        f"Резервные базы: {backups_text}{warning}"
+    )
+
+
+async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text(
+            "Эта команда доступна только администраторам бота."
+        )
+        return
+    rows = list_known_users()
+    if not rows:
+        await update.message.reply_text("Пока никто не писал боту.")
+        return
+    lines = [f"• {display_name(r)} — chat_id {r['chat_id']}" for r in rows]
+    await update.message.reply_text("Известные пользователи:\n" + "\n".join(lines))
+
+
+async def viewschedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text(
+            "Эта команда доступна только администраторам бота."
+        )
+        return
+    rows = list_known_users()
+    if not rows:
+        await update.message.reply_text("Пока никто не писал боту.")
+        return
+    buttons = [
+        [InlineKeyboardButton(display_name(r), callback_data=f"viewsch:{r['chat_id']}")]
+        for r in rows
+    ]
+    await update.message.reply_text(
+        "Чьё расписание посмотреть?", reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def viewschedule_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(update.effective_user.id):
+        await query.edit_message_text("Эта команда доступна только администраторам бота.")
+        return
+
+    target_chat_id = int(query.data.split(":", 1)[1])
+    info = get_chat_info(target_chat_id)
+    name = display_name(info) if info else f"chat_id {target_chat_id}"
+
+    rows = get_lessons(target_chat_id)
+    if not rows:
+        await query.edit_message_text(f"У «{name}» расписание пока пустое.")
+        return
+
+    by_day = {i: [] for i in range(7)}
+    for r in rows:
+        by_day[r["weekday"]].append(r)
+    blocks = [f"🗓 <b>Расписание «{html.escape(name)}»</b>"]
+    for i in range(7):
+        if not by_day[i]:
+            continue
+        heading = f"{WEEKDAY_EMOJI[i]} {WEEKDAY_NAMES_FULL_RU[i]}"
+        blocks.append(format_lessons_block(by_day[i], heading))
+
+    await query.edit_message_text("\n\n".join(blocks), parse_mode=ParseMode.HTML)
+
+
+async def testmorning_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    sent = await send_morning_schedule_for_chat(context.bot, update.effective_chat.id)
+    if not sent:
+        weekday = now_kz().weekday()
+        await update.message.reply_text(
+            f"На {WEEKDAY_NAMES_FULL_RU[weekday].lower()} в расписании пар нет — "
+            "поэтому утренняя рассылка ничего бы не отправила. "
+            "Добавь пару через /schedule_add и попробуй снова."
         )
 
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT
-            & filters.Regex(
-                r"https?://(?:www\.|vt\.|vm\.|m\.)?"
-                r"(?:instagram\.com|instagr\.am|tiktok\.com|twitter\.com|x\.com|"
-                r"youtube\.com|youtu\.be)/\S+"
-            )
-            & ~filters.COMMAND,
-            handle_media_link,
-        )
-    )
-    app.add_handler(CallbackQueryHandler(youtube_download_chosen, pattern="^ytdl:"))
-    if MEDIA_DOWNLOAD_ENABLED:
-        logger.info("Media downloader enabled (Instagram/TikTok/Twitter/YouTube).")
-    else:
-        logger.warning(
-            "yt-dlp isn't installed — the media downloader is disabled. "
-            "Run: pip install -r requirements.txt"
-        )
-
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & filters.REPLY & ~filters.COMMAND,
-            handle_translate_reply,
-        )
-    )
-    app.add_handler(CommandHandler("topactions", topactions_cmd))
-
-    logger.info("Fun reply-actions enabled (%d actions).", len(ACTIONS))
-
-    if TRANSLATE_ENABLED and requests is not None:
-        app.add_handler(InlineQueryHandler(inline_translate))
-        logger.info("Reply-to-translate and inline translation enabled (Groq).")
-
-    # ----------------------------------------------------
-    # Планировщик задач (JobQueue)
-    # ----------------------------------------------------
-    # Расписание и напоминание о заданиях теперь адаптивные: в личке время
-    # отправки подстраивается под первую пару конкретного человека сегодня
-    # (см. check_adaptive_schedule / check_adaptive_tasks), в группах — как
-    # раньше, статично в 07:30/08:00. Поэтому вместо двух run_daily — две
-    # поминутные проверки, как уже сделано для check_lesson_reminders.
-    # Staggered `first=` offsets (5/15/25/35s) so these don't all land on the
-    # same wall-clock second every minute and contend for the scheduler's
-    # executor — when they piled up together, a slow job earlier in the
-    # batch could push a later one past APScheduler's misfire grace window
-    # and cause that entire run to be skipped outright (seen in production:
-    # a reminder's exact-minute check got silently dropped this way).
-    app.job_queue.run_repeating(check_adaptive_schedule, interval=60, first=5)
-    app.job_queue.run_repeating(check_adaptive_tasks, interval=60, first=15)
-    # Новый ежедневный утренний опрос (07:45 Вт-Сб)
-    app.job_queue.run_daily(
-        send_morning_poll_job,
-        time=dtime(hour=POLL_HOUR, minute=POLL_MINUTE, tzinfo=TIMEZONE),
-        days=(2, 3, 4, 5, 6),  # PTB: 0 = воскресенье, значит Вт-Сб
-    )
-    app.job_queue.run_repeating(check_lesson_reminders, interval=60, first=25)
-    app.job_queue.run_repeating(check_reminders, interval=60, first=35)
-    app.job_queue.run_repeating(check_task_deadline_reminders, interval=60, first=45)
-    # LMS deadlines -> shared task list every 10 min (only for people who connected /lms)
-    app.job_queue.run_repeating(sync_lms_job, interval=600, first=120)
-    # Multi-database backup (no-op unless DATABASE_URL_BACKUP2/3 are set —
-    # see config.py). Every 6 hours into the first backup, once a night
-    # (00:00 Almaty time) into the second.
-    app.job_queue.run_repeating(backup_to_secondary, interval=6 * 3600, first=300)
-    app.job_queue.run_daily(backup_to_tertiary, time=dtime(hour=0, minute=0, tzinfo=TIMEZONE))
-
-    logger.info("Bot starting (polling)...")
-    app.run_polling()
 
 
-if __name__ == "__main__":
-    main()
+
+async def lmsusers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: who has connected an LMS calendar. Shows names and sync status
+    only — the links (they hold personal tokens) are never displayed."""
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда доступна только администраторам бота.")
+        return
+    feeds = list_lms_feeds()
+    if not feeds:
+        await update.message.reply_text("Пока никто не подключил календарь LMS (/lms).")
+        return
+    names = {r["chat_id"]: display_name(r) for r in list_known_users()}
+    lines = []
+    for f in feeds:
+        who = names.get(f["user_id"], f"id{f['user_id']}")
+        last = (f["last_sync"] or "—")[:16].replace("T", " ")
+        mark = "⚠️ ссылка не работает" if f["error_notified"] else "✅"
+        lines.append(f"• {who} — {mark}, обновлено {last}")
+    await update.message.reply_text(f"Подключили календарь LMS ({len(feeds)}):\n" + "\n".join(lines))
+
+
+async def exportdb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: download the whole database as a JSON file (private chat only)."""
+    import io
+    import json
+
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда доступна только администраторам бота.")
+        return
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Бэкап содержит данные всех пользователей — запроси его в личке с ботом.")
+        return
+    data = await asyncio.to_thread(export_all_tables)
+    payload = json.dumps(
+        {"exported_at": now_kz().isoformat(), "tables": data}, ensure_ascii=False, indent=1, default=str
+    ).encode("utf-8")
+    buf = io.BytesIO(payload)
+    buf.name = f"homework_bot_backup_{now_kz().strftime('%Y-%m-%d_%H-%M')}.json"
+    counts = ", ".join(f"{t}: {len(r)}" for t, r in data.items() if r)
+    await update.message.reply_document(buf, caption=f"💾 Бэкап базы. Строк по таблицам — {counts}"[:1000])
