@@ -10,6 +10,8 @@ from datetime import time as dtime
 from telegram import MenuButtonWebApp, WebAppInfo
 from telegram.error import Conflict
 
+from .bot_commands import sync_commands
+
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -21,6 +23,7 @@ from telegram.ext import (
 )
 
 from .config import (
+    ADMIN_IDS,
     BOT_TOKEN,
     GROQ_API_KEY,
     MEDIA_DOWNLOAD_ENABLED,
@@ -219,8 +222,14 @@ def main():
     init_db()
     start_health_check_server()
     async def _post_init(application):
+        # The "/" command menu is generated from bot_commands.py. Failure here
+        # must never stop the bot.
+        try:
+            await sync_commands(application.bot, ADMIN_IDS)
+        except Exception as e:
+            logger.warning("Could not update the command menu: %s", e)
         # Puts an "Открыть" button next to the message box in private chats
-        # that launches the Mini App. Failure here must never stop the bot.
+        # that launches the Mini App.
         if not WEBAPP_URL:
             return
         try:
