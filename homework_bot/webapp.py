@@ -52,7 +52,7 @@ from .db import (
     update_task_description,
     update_task_field,
 )
-from .permissions import is_admin, is_schedule_allowed
+from .permissions import can, is_admin
 from .utils import is_task_overdue, next_birthday_date, now_kz, parse_due_time, today_kz
 
 _INDEX_PATH = Path(__file__).parent / "webapp" / "index.html"
@@ -158,7 +158,8 @@ def build_state(user: dict) -> dict:
 
     state = {
         "user": {"id": uid, "first_name": user.get("first_name", "")},
-        "can_edit": is_schedule_allowed(uid),
+        "can_edit": can(uid, "tasks"),
+        "can_schedule": can(uid, "schedule"),
         "is_admin": admin,
         "today": today.isoformat(),
         "weekday": today.weekday(),
@@ -186,8 +187,8 @@ def build_state(user: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Input validation helpers
 # ---------------------------------------------------------------------------
-def _require_editor(user: dict):
-    if not is_schedule_allowed(user["id"]):
+def _require_editor(user: dict, perm: str = "tasks"):
+    if not can(user["id"], perm):
         raise ApiError(403, "forbidden")
 
 
@@ -351,7 +352,7 @@ def act_task_files(user, body):
 
 
 def act_lesson_add(user, body):
-    _require_editor(user)
+    _require_editor(user, "schedule")
     try:
         weekday = int(body.get("weekday"))
     except (TypeError, ValueError):
@@ -368,7 +369,7 @@ def act_lesson_add(user, body):
 
 
 def act_lesson_delete(user, body):
-    _require_editor(user)
+    _require_editor(user, "schedule")
     try:
         lesson = get_lesson(int(body.get("lesson_id", 0)))
     except (TypeError, ValueError):
@@ -430,13 +431,16 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- helpers --------------------------------------------------------
     def _send(self, code: int, body: bytes, content_type: str):
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the phone closed the app / lost signal mid-response — nothing to do
 
     def _json(self, code: int, payload: dict):
         self._send(code, json.dumps(payload, ensure_ascii=False).encode(), "application/json; charset=utf-8")
