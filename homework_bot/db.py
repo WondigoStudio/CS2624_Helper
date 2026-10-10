@@ -273,6 +273,14 @@ def init_db(target_url: str = None):
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_threads (
+            chat_id BIGINT PRIMARY KEY,
+            thread_id BIGINT NOT NULL
+        )
+        """
+    )
     # Per-person "done" marks: the task list is shared, but whether YOU have
     # finished a task is yours alone. (tasks.done = 1 is the legacy global
     # flag from before this table existed — still honored, so old finished
@@ -676,6 +684,29 @@ def all_chat_ids():
     return [r["chat_id"] for r in rows]
 
 
+def get_chat_thread(chat_id: int):
+    """Topic (message_thread_id) of a forum supergroup where the bot's daily
+    messages go, or None for the default (General / ordinary chat)."""
+    conn = db()
+    row = conn.execute("SELECT thread_id FROM chat_threads WHERE chat_id = ?", (chat_id,)).fetchone()
+    conn.close()
+    return row["thread_id"] if row else None
+
+
+def set_chat_thread(chat_id: int, thread_id):
+    conn = db()
+    if thread_id is None:
+        conn.execute("DELETE FROM chat_threads WHERE chat_id = ?", (chat_id,))
+    else:
+        conn.execute(
+            "INSERT INTO chat_threads (chat_id, thread_id) VALUES (?, ?) "
+            "ON CONFLICT(chat_id) DO UPDATE SET thread_id = excluded.thread_id",
+            (chat_id, thread_id),
+        )
+    conn.commit()
+    conn.close()
+
+
 def list_known_users():
     conn = db()
     rows = conn.execute("SELECT * FROM chats ORDER BY updated_at DESC").fetchall()
@@ -983,7 +1014,7 @@ def delete_birthday(birthday_id: int):
 _MIRROR_TABLES = [
     "tasks", "task_attachments", "task_done", "lms_synced", "lms_feeds", "chats", "schedule", "room_photos", "actions",
     "schedule_allowed_users", "report_settings", "group_members", "report_chats",
-    "reminders", "birthdays",
+    "reminders", "birthdays", "chat_threads",
 ]
 
 
