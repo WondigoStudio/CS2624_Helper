@@ -19,6 +19,7 @@ from .db import (
     bump_reminder_nag,
     db,
     get_all_enabled_reminders,
+    get_chat_thread,
     get_lessons,
     get_reminders_awaiting_confirmation,
     get_room_photo,
@@ -46,6 +47,15 @@ from .utils import (
     task_due_datetime,
     today_kz,
 )
+
+
+def _topic(chat_id: int) -> dict:
+    """send_* kwargs that route a message to the group's chosen topic."""
+    try:
+        thread = get_chat_thread(chat_id)
+    except Exception:
+        thread = None
+    return {"message_thread_id": thread} if thread else {}
 
 
 async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
@@ -97,6 +107,7 @@ async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
             # Отправка опроса
             poll_msg = await context.bot.send_poll(
                 chat_id=chat_id,
+                **_topic(chat_id),
                 question="Кто идет в университет?",
                 options=options,
                 is_anonymous=False,
@@ -135,7 +146,7 @@ async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
                     for uid, name in users_to_tag.items()
                 ]
                 call_text = "📢 <b>Пройдите утренний опрос:</b>\n" + " ".join(mentions)
-                await context.bot.send_message(chat_id=chat_id, text=call_text, parse_mode=ParseMode.HTML)
+                await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=call_text, parse_mode=ParseMode.HTML)
 
         except Exception as e:
             logger.error(f"Ошибка отправки опроса в {chat_id}: {e}")
@@ -173,7 +184,7 @@ async def check_adaptive_schedule(context: ContextTypes.DEFAULT_TYPE):
         try:
             weather = await morning_weather_text()
             if weather:
-                await context.bot.send_message(chat_id=chat_id, text=weather, parse_mode=ParseMode.HTML)
+                await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=weather, parse_mode=ParseMode.HTML)
         except Exception as e:
             logger.warning("Could not send morning weather to chat %s: %s", chat_id, e)
 
@@ -209,7 +220,7 @@ async def check_adaptive_tasks(context: ContextTypes.DEFAULT_TYPE):
         )
         try:
             for chunk in _chunk_text(chat_text):
-                await context.bot.send_message(chat_id=chat_id, text=chunk)
+                await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=chunk)
         except Exception as e:
             logger.warning("Could not message chat %s: %s", chat_id, e)
 
@@ -224,7 +235,7 @@ async def send_morning_schedule_for_chat(bot, chat_id: int, weekday: int = None)
 
     heading = f"🌅 Расписание на {WEEKDAY_NAMES_FULL_RU[weekday].lower()}"
     text = format_lessons_block(rows, heading)
-    await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
+    await bot.send_message(chat_id=chat_id, **_topic(chat_id), text=text, parse_mode=ParseMode.HTML)
 
     seen_rooms = []
     for r in rows:
@@ -238,9 +249,9 @@ async def send_morning_schedule_for_chat(bot, chat_id: int, weekday: int = None)
         file_id, kind = photo
         caption = f"📍 Кабинет {room}"
         if kind == "document":
-            await bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
+            await bot.send_document(chat_id=chat_id, **_topic(chat_id), document=file_id, caption=caption)
         else:
-            await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
+            await bot.send_photo(chat_id=chat_id, **_topic(chat_id), photo=file_id, caption=caption)
 
     return True
 
@@ -420,7 +431,7 @@ async def check_task_deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
             if chat_id in finished:
                 continue  # this person already marked it done — no need to nag
             try:
-                await context.bot.send_message(chat_id=chat_id, text=text)
+                await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=text)
             except Exception as e:
                 logger.warning("Could not send deadline reminder to chat %s: %s", chat_id, e)
         mark_task_deadline_notified(row["id"])
@@ -445,7 +456,7 @@ async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
                 f"[{SUBJECT_NAME[r['subject']]}] в {r['time']}, каб. {r['room']}"
             )
             try:
-                await context.bot.send_message(chat_id=chat_id, text=text)
+                await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=text)
             except Exception as e:
                 logger.warning("Could not send lesson reminder to chat %s: %s", chat_id, e)
                 continue
@@ -457,8 +468,8 @@ async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
             try:
                 caption = f"📍 Кабинет {r['room']}"
                 if kind == "document":
-                    await context.bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
+                    await context.bot.send_document(chat_id=chat_id, **_topic(chat_id), document=file_id, caption=caption)
                 else:
-                    await context.bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
+                    await context.bot.send_photo(chat_id=chat_id, **_topic(chat_id), photo=file_id, caption=caption)
             except Exception as e:
                 logger.warning("Could not send room photo reminder to chat %s: %s", chat_id, e)
