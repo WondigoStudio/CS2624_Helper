@@ -523,7 +523,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(401, {"error": "unauthorized"})
             return
         try:
-            self._json(200, action(user, body))
+            result = action(user, body)
+            if body.get("want_state") and isinstance(result, dict):
+                result["state"] = build_state(user)  # saves the app a second round trip
+            self._json(200, result)
         except ApiError as e:
             self._json(e.code, {"error": e.error})
         except Exception as e:  # never let a bad request kill the thread silently
