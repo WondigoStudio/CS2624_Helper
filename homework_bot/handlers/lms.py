@@ -14,7 +14,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from ..config import LMS_HOST
 from ..db import delete_lms_feed, get_lms_feed, register_chat, save_lms_feed
 from ..lms_sync import sync_all_feeds, sync_feed, sync_ics_text, validate_feed_url
-from ..permissions import is_admin, is_schedule_allowed
+from ..permissions import can, is_admin
 from ..states import LMS_URL
 
 _HOW_TO = (
@@ -54,8 +54,8 @@ async def lms_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Ссылку с личным токеном нельзя присылать в группу. Напиши мне в личку и нажми /lms."
         )
         return ConversationHandler.END
-    if not is_schedule_allowed(update.effective_user.id):
-        await update.message.reply_text("У вас нет доступа к управлению заданиями.")
+    if not can(update.effective_user.id, "lms"):
+        await update.message.reply_text("У тебя нет доступа к LMS — попроси админа выдать.")
         return ConversationHandler.END
     feed = get_lms_feed(update.effective_user.id)
     head = (
