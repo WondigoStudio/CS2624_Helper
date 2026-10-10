@@ -191,6 +191,24 @@ def init_db(target_url: str = None):
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_perms (
+            user_id BIGINT NOT NULL,
+            perm TEXT NOT NULL,
+            PRIMARY KEY (user_id, perm)
+        )
+        """
+    )
+    # One-time: people who had the old single "allowed" flag get all three rights.
+    if not conn.execute("SELECT 1 FROM user_perms WHERE user_id = 0 AND perm = '_migrated'").fetchone():
+        for old in conn.execute("SELECT user_id FROM schedule_allowed_users").fetchall():
+            for perm in ("tasks", "schedule", "lms"):
+                conn.execute(
+                    "INSERT INTO user_perms (user_id, perm) VALUES (?, ?) ON CONFLICT(user_id, perm) DO NOTHING",
+                    (old["user_id"], perm),
+                )
+        conn.execute("INSERT INTO user_perms (user_id, perm) VALUES (0, '_migrated')")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS report_settings (
             chat_id BIGINT PRIMARY KEY,
@@ -1013,7 +1031,7 @@ def delete_birthday(birthday_id: int):
 # against SQLite or against DATABASE_URL itself as the target.
 _MIRROR_TABLES = [
     "tasks", "task_attachments", "task_done", "lms_synced", "lms_feeds", "chats", "schedule", "room_photos", "actions",
-    "schedule_allowed_users", "report_settings", "group_members", "report_chats",
+    "schedule_allowed_users", "user_perms", "report_settings", "group_members", "report_chats",
     "reminders", "birthdays", "chat_threads",
 ]
 
