@@ -122,7 +122,6 @@ from .handlers.tasks import (
     week_cmd,
 )
 from .handlers.schedule import (
-    allow_schedule_cmd,
     copyschedule_cmd,
     copyschedule_go,
     copyschedule_source_chosen,
@@ -149,7 +148,8 @@ from .handlers.schedule import (
     schedule_today_cmd,
     schedule_week_cmd,
     schedule_weekday_chosen,
-    toggle_schedule_permission_chosen,
+    permissions_callback,
+    permissions_cmd,
 )
 from .handlers.roomphotos import (
     addroomphoto_document_received,
@@ -448,8 +448,8 @@ def main():
     app.add_handler(CallbackQueryHandler(copyschedule_source_chosen, pattern="^cpsrc:"))
     app.add_handler(CallbackQueryHandler(copyschedule_target_chosen, pattern="^cptgt:"))
     app.add_handler(CallbackQueryHandler(copyschedule_go, pattern="^cpgo:"))
-    app.add_handler(CommandHandler("allow_schedule", allow_schedule_cmd))
-    app.add_handler(CallbackQueryHandler(toggle_schedule_permission_chosen, pattern="^toggle_sch_perm:"))
+    app.add_handler(CommandHandler(["permissions", "allow_schedule"], permissions_cmd))
+    app.add_handler(CallbackQueryHandler(permissions_callback, pattern="^perm(u|t|all|back)"))
 
     # ----------------------------------------------------
     # Модули расширений (Голос / Перевод)
