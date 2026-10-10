@@ -390,3 +390,92 @@ async def schedule_day_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.reply_text(
             "ℹ️ Для кабинетов этого дня фото пока не сохранены (/addroomphoto)."
         )
+
+
+
+
+# ---------------------------------------------------------------------------
+# /copyschedule — take someone else's timetable as a starting point
+# ---------------------------------------------------------------------------
+async def copyschedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_chat(update)
+    if not is_schedule_allowed(update.effective_user.id):
+        await update.message.reply_text("У вас нет доступа к управлению расписанием.")
+        return
+    here = update.effective_chat.id
+    buttons = []
+    for u in list_known_users():
+        if u["chat_id"] == here or u["chat_type"] != "private":
+            continue
+        n = len(get_lessons(u["chat_id"]))
+        if n:
+            buttons.append([InlineKeyboardButton(f"{display_name(u)} — {n} пар", callback_data=f"cpsrc:{u['chat_id']}")])
+    if not buttons:
+        await update.message.reply_text("Пока ни у кого нет расписания, которое можно скопировать.")
+        return
+    where = "в твоё расписание" if update.effective_chat.type == "private" else "в расписание этой группы"
+    await update.message.reply_text(
+        f"Чьё расписание скопировать {where}? Потом его можно поправить через /editschedule.",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def copyschedule_source_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not is_schedule_allowed(q.from_user.id):
+        return
+    src = int(q.data.split(":")[1])
+    lessons = get_lessons(src)
+    if not lessons:
+        await q.edit_message_text("У этого человека расписание пустое.")
+        return
+    mine = len(get_lessons(q.message.chat.id))
+    rows = [[InlineKeyboardButton("➕ Добавить к моему", callback_data=f"cpgo:{src}:add")]]
+    if mine:
+        rows.append([InlineKeyboardButton(f"♻️ Заменить моё ({mine} пар)", callback_data=f"cpgo:{src}:replace")])
+    rows.append([InlineKeyboardButton("✖️ Отмена", callback_data="cpgo:0:cancel")])
+    await q.edit_message_text(
+        f"Скопировать {len(lessons)} пар (и фото кабинетов)?",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def copyschedule_go(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from ..db import list_room_photos, set_room_photo
+
+    q = update.callback_query
+    await q.answer()
+    _, src, mode = q.data.split(":")
+    if mode == "cancel":
+        await q.edit_message_text("Отменено.")
+        return
+    if not is_schedule_allowed(q.from_user.id):
+        return
+    src, dst = int(src), q.message.chat.id
+    lessons = get_lessons(src)
+    if mode == "replace":
+        for old in get_lessons(dst):
+            delete_lesson(old["id"])
+    have = {(r["weekday"], r["time"], r["subject"], r["room"]) for r in get_lessons(dst)}
+    added = 0
+    for r in lessons:
+        key = (r["weekday"], r["time"], r["subject"], r["room"])
+        if key in have:
+            continue
+        add_lesson(dst, r["weekday"], r["time"], r["subject"], r["room"])
+        have.add(key)
+        added += 1
+    photos = 0
+    mine = set(list_room_photos(dst))
+    for room in list_room_photos(src):
+        if room in mine:
+            continue
+        p = get_room_photo(src, room)
+        if p:
+            set_room_photo(dst, room, p[0], p[1])
+            photos += 1
+    await q.edit_message_text(
+        f"✅ Скопировано пар: {added}, фото кабинетов: {photos}.\n"
+        "Посмотреть — /schedule_week, поправить — /editschedule."
+    )
