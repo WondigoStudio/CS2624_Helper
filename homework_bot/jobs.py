@@ -182,7 +182,7 @@ async def check_adaptive_schedule(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.warning("Could not send morning schedule to chat %s: %s", chat_id, e)
         try:
-            weather = await morning_weather_text()
+            weather = await morning_weather_text() if weekday != 6 else None  # в воскресенье без погоды
             if weather:
                 await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=weather, parse_mode=ParseMode.HTML)
         except Exception as e:
