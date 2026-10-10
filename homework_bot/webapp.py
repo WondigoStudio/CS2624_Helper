@@ -17,6 +17,7 @@ needs being whoever added it or an admin.
 """
 
 import calendar
+import gzip
 import hashlib
 import hmac
 import html
@@ -425,25 +426,54 @@ _ROUTES = {
 }
 
 
+_index_cache = {"mtime": None, "raw": b"", "gz": b"", "etag": ""}
+
+
+def _index_page():
+    """The page, its gzip form and an ETag — rebuilt only when the file changes."""
+    mtime = _INDEX_PATH.stat().st_mtime
+    if _index_cache["mtime"] != mtime:
+        raw = _INDEX_PATH.read_bytes()
+        _index_cache.update(
+            mtime=mtime, raw=raw, gz=gzip.compress(raw, 6),
+            etag='"' + hashlib.md5(raw).hexdigest() + '"',
+        )
+    return _index_cache
+
+
 class _Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"  # keep-alive: no new connection per request
+    timeout = 30  # don't let a dead client hold a thread forever
+
     def log_message(self, *args):
         pass  # keep the bot's own logs clean
 
     # -- helpers --------------------------------------------------------
-    def _send(self, code: int, body: bytes, content_type: str):
+    def _send(self, code: int, body: bytes, content_type: str, extra=None, is_gzip=False, compress=True):
         try:
+            if (
+                compress and not is_gzip and len(body) > 1024
+                and "gzip" in self.headers.get("Accept-Encoding", "")
+            ):
+                body = gzip.compress(body, 5)
+                is_gzip = True
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            if is_gzip:
+                self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+            for k, v in (extra or {"Cache-Control": "no-store"}).items():
+                self.send_header(k, v)
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
-            pass  # the phone closed the app / lost signal mid-response — nothing to do
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            self.close_connection = True  # the phone closed the app / lost signal mid-response
 
     def _json(self, code: int, payload: dict):
-        self._send(code, json.dumps(payload, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+        self._send(code, json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(),
+                   "application/json; charset=utf-8")
 
     def _read_json(self):
         try:
@@ -463,9 +493,17 @@ class _Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             try:
-                self._send(200, _INDEX_PATH.read_bytes(), "text/html; charset=utf-8")
+                page = _index_page()
             except OSError:
                 self._send(200, b"ok", "text/plain")
+                return
+            headers = {"Cache-Control": "no-cache", "ETag": page["etag"]}  # revalidate: a 304 is instant
+            if self.headers.get("If-None-Match") == page["etag"]:
+                self._send(304, b"", "text/html; charset=utf-8", extra=headers)
+            elif "gzip" in self.headers.get("Accept-Encoding", ""):
+                self._send(200, page["gz"], "text/html; charset=utf-8", extra=headers, is_gzip=True)
+            else:
+                self._send(200, page["raw"], "text/html; charset=utf-8", extra=headers, compress=False)
         else:
             self._send(200, b"ok", "text/plain")
 
