@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>Homework</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://telegram.org">
+<script src="https://telegram.org/js/telegram-web-app.js" defer></script>
 <style>
   :root {
     --bg: var(--tg-theme-bg-color, #ffffff);
@@ -115,6 +116,11 @@
   .three { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 10px; }
   .sheet .btns { display: grid; gap: 8px; margin-top: 18px; }
   .note { font-size: 13px; color: var(--hint); margin-top: 6px; }
+  .skel { height: 64px; background: linear-gradient(90deg, var(--bg) 25%, color-mix(in srgb, var(--hint) 12%, var(--bg)) 50%, var(--bg) 75%);
+    background-size: 200% 100%; animation: shimmer 1.2s linear infinite; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  .check, .chipbtn, .btn, nav button, .filters button { touch-action: manipulation; }
+  .card { contain: content; }
 </style>
 </head>
 <body>
@@ -125,7 +131,7 @@
 </header>
 
 <main>
-  <section class="view on" id="v-today"></section>
+  <section class="view on" id="v-today"><div class="card skel"></div><div class="card skel"></div><div class="card skel"></div></section>
   <section class="view" id="v-tasks"></section>
   <section class="view" id="v-cal"></section>
   <section class="view" id="v-week"></section>
@@ -146,6 +152,7 @@
 <div class="toast" id="toast"></div>
 
 <script>
+window.addEventListener("DOMContentLoaded", () => {
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 
@@ -158,7 +165,8 @@ let state = null;
 const ui = { tab: "today", filter: "all", open: null, showDone: false, calY: 0, calM: 0, calDay: null };
 
 const $ = (id) => document.getElementById(id);
-function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+function esc(s) { return s == null ? "" : String(s).replace(/[&<>"']/g, (c) => ESC[c]); }
 function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2400); }
 function haptic(kind) { try { tg.HapticFeedback.notificationOccurred(kind); } catch (e) {} }
 function pad(n) { return String(n).padStart(2, "0"); }
@@ -179,9 +187,9 @@ const ERR = { forbidden: "Нет доступа к этому действию",
   not_found: "Уже удалено", no_files: "У задания нет вложений", send_failed: "Не удалось отправить файлы" };
 async function act(path, body, okMsg) {
   try {
-    const res = await api(path, body);
+    const res = await api(path, Object.assign({ want_state: true }, body));
     haptic("success"); if (okMsg) toast(okMsg);
-    await load();
+    if (res && res.state) { applyState(res.state); } else { await load(); }
     return res;
   } catch (e) {
     haptic("error");
@@ -368,13 +376,19 @@ function renderMore() {
   $("v-more").innerHTML = h;
 }
 
+const VIEWS = { today: renderToday, tasks: renderTasks, cal: renderCal, week: renderWeek, more: renderMore };
+const dirty = new Set(Object.keys(VIEWS));
+function renderView(tab) { if (dirty.has(tab)) { dirty.delete(tab); VIEWS[tab](); } }
+
 function render() {
   const name = state.user.first_name;
   $("hello").textContent = name ? "Привет, " + name + "!" : "Привет!";
   const d = parseDate(state.today);
   $("date").textContent = WEEKDAYS[state.weekday] + ", " + d.getDate() + " " + MONTHS_GEN[d.getMonth()];
   if (!ui.calY) { ui.calY = d.getFullYear(); ui.calM = d.getMonth(); ui.calDay = state.today; }
-  renderProgress(); renderToday(); renderTasks(); renderCal(); renderWeek(); renderMore();
+  renderProgress();
+  Object.keys(VIEWS).forEach(k => dirty.add(k));
+  renderView(ui.tab);
   $("fab").classList.toggle("show", state.can_edit && (ui.tab === "today" || ui.tab === "tasks"));
 }
 
@@ -384,11 +398,29 @@ function showFatal(msg) {
   $("v-today").innerHTML = `<div class="card empty">${esc(msg)}</div>`;
 }
 
+const CACHE_KEY = "hw_state_v2";
+function applyState(s) {
+  state = s; render();
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify(s)); } catch (e) {}
+}
+function paintCached() {
+  // show the last known list immediately; the fresh copy replaces it a moment later
+  try {
+    const c = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+    const me = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+    if (c && c.user && me && c.user.id === me.id) { state = c; render(); $("date").textContent += " · обновляю…"; return true; }
+  } catch (e) {}
+  return false;
+}
 async function load() {
   if (!tg || !tg.initData) { showFatal("Открой приложение через бота в Telegram: команда /app."); return; }
-  try { state = await api("/api/state"); render(); }
-  catch (e) { showFatal(e.status === 401 ? "Сессия устарела — закрой и открой приложение заново." : "Не удалось загрузить данные. Сервер мог просто «просыпаться» — попробуй через минуту."); }
+  try { applyState(await api("/api/state")); }
+  catch (e) {
+    if (state) { toast("Нет связи — показываю сохранённые данные"); return; }
+    showFatal(e.status === 401 ? "Сессия устарела — закрой и открой приложение заново." : "Не удалось загрузить данные. Сервер мог просто «просыпаться» — попробуй через минуту.");
+  }
 }
+function boot() { if (tg && tg.initData) paintCached(); load(); }
 
 /* ---------- forms ---------- */
 function openSheet(html) { $("sheet").innerHTML = html; $("overlay").classList.add("show"); }
@@ -454,6 +486,25 @@ function bdayForm() {
   };
 }
 
+const pendingToggle = new Set();
+async function toggleDone(id, on) {
+  // The check mark changes instantly; the server is told in the background
+  // and the change is rolled back only if that fails.
+  if (pendingToggle.has(id)) return;
+  const before = JSON.stringify(state);
+  const from = on ? state.tasks : state.done_tasks, to = on ? state.done_tasks : state.tasks;
+  const i = from.findIndex(t => t.id === id);
+  if (i < 0) return;
+  const [t] = from.splice(i, 1);
+  if (on) to.unshift(t); else { to.push(t); to.sort((a, b) => (a.due_date + (a.due_time || "")).localeCompare(b.due_date + (b.due_time || ""))); }
+  state.stats.done += on ? 1 : -1; state.stats.todo += on ? -1 : 1;
+  render(); haptic("success"); toast(on ? "Отмечено ✅ — только у тебя" : "Вернул в список");
+  pendingToggle.add(id);
+  try { await api(on ? "/api/done" : "/api/undone", { task_id: id }); }
+  catch (e) { state = JSON.parse(before); render(); haptic("error"); toast("Не получилось сохранить — вернул как было"); }
+  finally { pendingToggle.delete(id); try { localStorage.setItem(CACHE_KEY, JSON.stringify(state)); } catch (e) {} }
+}
+
 function findTask(id) { return state.tasks.concat(state.done_tasks).find(t => t.id === id); }
 
 /* ---------- events ---------- */
@@ -463,7 +514,7 @@ document.addEventListener("click", async (ev) => {
     ui.tab = nav.dataset.tab;
     document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b === nav));
     document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.id === "v-" + ui.tab));
-    if (state) $("fab").classList.toggle("show", state.can_edit && (ui.tab === "today" || ui.tab === "tasks"));
+    if (state) { renderView(ui.tab); $("fab").classList.toggle("show", state.can_edit && (ui.tab === "today" || ui.tab === "tasks")); }
     window.scrollTo(0, 0); return;
   }
   if (ev.target === $("overlay")) { closeSheet(); return; }
@@ -471,8 +522,8 @@ document.addEventListener("click", async (ev) => {
   if (!el || !state) return;
   const id = Number(el.dataset.id);
   switch (el.dataset.act) {
-    case "done": el.disabled = true; await act("/api/done", { task_id: id }, "Отмечено ✅ — только у тебя"); break;
-    case "undo": el.disabled = true; await act("/api/undone", { task_id: id }, "Вернул в список"); break;
+    case "done": toggleDone(id, true); break;
+    case "undo": toggleDone(id, false); break;
     case "toggle": ui.open = ui.open === id ? null : id; render(); break;
     case "toggledone": ui.showDone = !ui.showDone; render(); break;
     case "filter": ui.filter = el.dataset.v; render(); break;
@@ -490,7 +541,8 @@ document.addEventListener("click", async (ev) => {
   }
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden && state && !$("overlay").classList.contains("show")) load(); });
-load();
+boot();
+});
 </script>
 </body>
 </html>
