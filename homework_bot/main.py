@@ -157,8 +157,8 @@ from .handlers.roomphotos import (
     testphoto_cmd,
 )
 from .handlers.calendar import calendar_cmd, calendar_day_tap, calendar_nav, calendar_noop
-from .handlers.admin import backupnow_cmd, dbstatus_cmd, testmorning_cmd, users_cmd, viewschedule_chosen, viewschedule_cmd
-from .handlers.social import call_cmd, set_report_cmd, topactions_cmd, track_group_members
+from .handlers.admin import backupnow_cmd, dbstatus_cmd, lmsusers_cmd, testmorning_cmd, users_cmd, viewschedule_chosen, viewschedule_cmd
+from .handlers.social import call_cmd, set_report_cmd, topactions_cmd, track_group_members, sethere_cmd
 from .handlers.transcribe import handle_transcribe
 from .handlers.translate import handle_translate_reply, inline_translate
 from .handlers.media import handle_media_link, youtube_download_chosen
@@ -421,6 +421,7 @@ def main():
     app.add_handler(lms_conv)
     app.add_handler(CommandHandler("lmsoff", lmsoff_cmd))
     app.add_handler(CommandHandler("lmssync", lmssync_cmd))
+    app.add_handler(CommandHandler("lmsusers", lmsusers_cmd))
     app.add_handler(CommandHandler("backupnow", backupnow_cmd))
     app.add_handler(CommandHandler("viewschedule", viewschedule_cmd))
     app.add_handler(CallbackQueryHandler(viewschedule_chosen, pattern="^viewsch:"))
@@ -431,6 +432,7 @@ def main():
     # --- НОВЫЕ ХЭНДЛЕРЫ ---
     app.add_handler(CommandHandler("call", call_cmd))
     app.add_handler(CommandHandler("set_report", set_report_cmd))
+    app.add_handler(CommandHandler("sethere", sethere_cmd))
     app.add_handler(CommandHandler("allow_schedule", allow_schedule_cmd))
     app.add_handler(CallbackQueryHandler(toggle_schedule_permission_chosen, pattern="^toggle_sch_perm:"))
 
