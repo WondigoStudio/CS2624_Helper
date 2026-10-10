@@ -519,6 +519,7 @@ def main():
     app.job_queue.run_daily(
         send_morning_poll_job,
         time=dtime(hour=POLL_HOUR, minute=POLL_MINUTE, tzinfo=TIMEZONE),
+        days=(2, 3, 4, 5, 6),  # PTB: 0 = воскресенье, значит Вт-Сб
     )
     app.job_queue.run_repeating(check_lesson_reminders, interval=60, first=25)
     app.job_queue.run_repeating(check_reminders, interval=60, first=35)
