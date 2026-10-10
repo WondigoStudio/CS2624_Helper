@@ -244,7 +244,20 @@ def main():
             return
         logger.error("Unhandled error", exc_info=context.error)
 
-    app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(_post_init)
+        # A slow handler (a video download, the AI, an upload) used to hold up
+        # everyone else's commands: updates are now processed concurrently.
+        .concurrent_updates(16)
+        .connection_pool_size(32)
+        .pool_timeout(10)
+        .connect_timeout(10)
+        .read_timeout(20)
+        .write_timeout(30)
+        .build()
+    )
     app.add_error_handler(_on_error)
 
     add_conv = ConversationHandler(
