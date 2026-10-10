@@ -219,20 +219,30 @@ async def schedule_delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("У вас нет доступа к управлению расписанием.")
         return
     register_chat(update)
-    rows = get_lessons(update.effective_chat.id)
-    if not rows:
+    here = update.effective_chat.id
+    if is_admin(update.effective_user.id):
+        kb = _schedule_owner_keyboard("sdowner", here)
+        if kb is None:
+            await update.message.reply_text("Ни у кого пока нет расписания.")
+            return
+        await update.message.reply_text("Из чьего расписания удалить пару?", reply_markup=kb)
+        return
+    if not get_lessons(here):
         await update.message.reply_text("Расписание пустое.")
         return
-    buttons = [
-        [InlineKeyboardButton(
-            f"{WEEKDAY_NAMES_RU[r['weekday']]} {r['time']} {SUBJECT_NAME[r['subject']]}",
-            callback_data=f"schdel:{r['id']}",
-        )]
-        for r in rows
-    ]
-    await update.message.reply_text(
-        "Что удалить из расписания?", reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    await update.message.reply_text("Что удалить из расписания?", reply_markup=_lesson_buttons(here, "schdel"))
+
+
+async def schedule_delete_owner_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    owner = int(query.data.split(":")[1])
+    if not get_lessons(owner):
+        await query.edit_message_text("У этого человека расписание пустое.")
+        return
+    await query.edit_message_text("Что удалить из расписания?", reply_markup=_lesson_buttons(owner, "schdel"))
 
 
 async def schedule_delete_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -244,25 +254,57 @@ async def schedule_delete_chosen(update: Update, context: ContextTypes.DEFAULT_T
 
 
 # --- /editschedule: change weekday, subject, time or room of a lesson -----
+def _schedule_owner_keyboard(prefix: str, here: int):
+    """Admin: whose timetable to work with (only people who have one)."""
+    rows = []
+    for u in list_known_users():
+        n = len(get_lessons(u["chat_id"]))
+        if n:
+            name = "Моё расписание" if u["chat_id"] == here else display_name(u)
+            rows.append([InlineKeyboardButton(f"{name} — {n} пар", callback_data=f"{prefix}:{u['chat_id']}")])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+def _lesson_buttons(chat_id: int, prefix: str):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            f"{WEEKDAY_NAMES_RU[r['weekday']]} {r['time']} {SUBJECT_NAME[r['subject']]}",
+            callback_data=f"{prefix}:{r['id']}",
+        )]
+        for r in get_lessons(chat_id)
+    ])
+
+
 async def editschedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_schedule_allowed(update.effective_user.id):
         await update.message.reply_text("У вас нет доступа к управлению расписанием.")
         return ConversationHandler.END
     register_chat(update)
-    rows = get_lessons(update.effective_chat.id)
-    if not rows:
+    here = update.effective_chat.id
+    if is_admin(update.effective_user.id):
+        kb = _schedule_owner_keyboard("edowner", here)
+        if kb is None:
+            await update.message.reply_text("Ни у кого пока нет расписания. Добавь пару через /schedule_add.")
+            return ConversationHandler.END
+        await update.message.reply_text("Чьё расписание изменить?", reply_markup=kb)
+        return EDIT_LESSON_PICK
+    if not get_lessons(here):
         await update.message.reply_text("Расписание пустое. Добавь пару через /schedule_add.")
         return ConversationHandler.END
-    buttons = [
-        [InlineKeyboardButton(
-            f"{WEEKDAY_NAMES_RU[r['weekday']]} {r['time']} {SUBJECT_NAME[r['subject']]}",
-            callback_data=f"editlesson:{r['id']}",
-        )]
-        for r in rows
-    ]
-    await update.message.reply_text(
-        "Какую пару изменить?", reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    await update.message.reply_text("Какую пару изменить?", reply_markup=_lesson_buttons(here, "editlesson"))
+    return EDIT_LESSON_PICK
+
+
+async def editschedule_owner_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return EDIT_LESSON_PICK
+    owner = int(query.data.split(":")[1])
+    if not get_lessons(owner):
+        await query.edit_message_text("У этого человека расписание пустое.")
+        return ConversationHandler.END
+    await query.edit_message_text("Какую пару изменить?", reply_markup=_lesson_buttons(owner, "editlesson"))
     return EDIT_LESSON_PICK
 
 
