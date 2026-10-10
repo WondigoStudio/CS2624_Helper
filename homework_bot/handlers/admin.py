@@ -18,6 +18,7 @@ from ..db import (
     get_lessons,
     init_db,
     list_known_users,
+    list_lms_feeds,
     mirror_active_db_to,
     register_chat,
 )
@@ -167,3 +168,26 @@ async def testmorning_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "поэтому утренняя рассылка ничего бы не отправила. "
             "Добавь пару через /schedule_add и попробуй снова."
         )
+
+
+
+
+async def lmsusers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: who has connected an LMS calendar. Shows names and sync status
+    only — the links (they hold personal tokens) are never displayed."""
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда доступна только администраторам бота.")
+        return
+    feeds = list_lms_feeds()
+    if not feeds:
+        await update.message.reply_text("Пока никто не подключил календарь LMS (/lms).")
+        return
+    names = {r["chat_id"]: display_name(r) for r in list_known_users()}
+    lines = []
+    for f in feeds:
+        who = names.get(f["user_id"], f"id{f['user_id']}")
+        last = (f["last_sync"] or "—")[:16].replace("T", " ")
+        mark = "⚠️ ссылка не работает" if f["error_notified"] else "✅"
+        lines.append(f"• {who} — {mark}, обновлено {last}")
+    await update.message.reply_text(f"Подключили календарь LMS ({len(feeds)}):\n" + "\n".join(lines))
