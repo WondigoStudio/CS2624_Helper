@@ -2,8 +2,10 @@
 everyone" and morning-poll opt-in commands, and the reply-with-a-word fun
 actions (обнять, ударить, ...)."""
 
+import asyncio
 import html
 import random
+import time
 
 from telegram import MessageEntity, Update
 from telegram.constants import ParseMode
@@ -16,37 +18,42 @@ from ..formatting import short_name
 from ..utils import now_kz, reply_text_chunked
 
 
+_member_seen = {}  # (chat_id, user_id) -> (first_name, monotonic time of the last write)
+_MEMBER_REFRESH_SECONDS = 6 * 3600
+
+
 async def track_group_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Автоматически сохраняет обычных участников группы в БД при их активности"""
+    """Автоматически сохраняет обычных участников группы в БД при их активности.
+    Запись делается только когда человек новый, сменил имя или давно не обновлялся —
+    а не на каждое сообщение в группе."""
     chat = update.effective_chat
     user = update.effective_user
-    
+
     if chat and chat.type in ("group", "supergroup") and user and not user.is_bot:
-        conn = db()
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS group_members (
-                chat_id BIGINT,
-                user_id BIGINT,
-                first_name TEXT,
-                updated_at TEXT,
-                PRIMARY KEY (chat_id, user_id)
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO group_members (chat_id, user_id, first_name, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(chat_id, user_id) DO UPDATE SET
-                first_name = excluded.first_name,
-                updated_at = excluded.updated_at
-            """,
-            (chat.id, user.id, user.first_name, now_kz().isoformat())
-        )
-        conn.commit()
-        conn.close()
-      
+        key = (chat.id, user.id)
+        seen = _member_seen.get(key)
+        if seen and seen[0] == user.first_name and time.monotonic() - seen[1] < _MEMBER_REFRESH_SECONDS:
+            return
+        _member_seen[key] = (user.first_name, time.monotonic())
+        await asyncio.to_thread(_save_member, chat.id, user.id, user.first_name)
+
+
+def _save_member(chat_id: int, user_id: int, first_name):
+    conn = db()
+    conn.execute(
+        """
+        INSERT INTO group_members (chat_id, user_id, first_name, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(chat_id, user_id) DO UPDATE SET
+            first_name = excluded.first_name,
+            updated_at = excluded.updated_at
+        """,
+        (chat_id, user_id, first_name, now_kz().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
 async def call_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type not in ("group", "supergroup"):
