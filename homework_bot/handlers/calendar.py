@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 from ..config import SHARED_TASKS_ID, logger
 from ..constants import MONTH_NAMES_RU, SUBJECT_NAME
 from ..db import get_task_attachments, get_tasks, register_chat
+from ..ephemeral import send_ephemeral
 from ..keyboards import calendar_keyboard
 from ..utils import today_kz
 
@@ -52,25 +53,56 @@ async def calendar_noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
 
 
+def _day_lines(d, rows, with_details: bool):
+    lines = [f"{d.strftime('%d.%m.%Y')}:"]
+    for r in rows:
+        mark = "✅" if r["my_done"] else "▫️"
+        time_part = f" ({r['due_time']})" if r["due_time"] else ""
+        has_files = bool(get_task_attachments(r["id"]))
+        attach_part = " 📎" if has_files else ""
+        desc_part = " 📝" if r["description"] else ""
+        lines.append(f"{mark} [{SUBJECT_NAME[r['subject']]}] {r['title']}{time_part}{attach_part}{desc_part}")
+        if with_details and r["description"]:
+            text = r["description"].strip()
+            lines.append("   " + (text[:300] + "…" if len(text) > 300 else text))
+    return lines
+
+
 async def calendar_day_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     iso_day = query.data.split(":")[1]
     d = datetime.strptime(iso_day, "%Y-%m-%d").date()
+    chat = update.effective_chat
+    in_group = chat.type != "private"
+
+    # In a group the answer goes to the person who tapped, as a message only
+    # they can see (Bot API 10.2 ephemeral message), so the shared chat does
+    # not fill up with everyone's lookups. It also uses *their* done marks.
+    if in_group:
+        mine = get_tasks(SHARED_TASKS_ID, only_undone=False, start=iso_day, end=iso_day,
+                         viewer_id=update.effective_user.id)
+        if not mine:
+            text = f"{d.strftime('%d.%m.%Y')} — заданий нет 🎉"
+        else:
+            text = "\n".join(_day_lines(d, mine, with_details=True))
+            if any(get_task_attachments(r["id"]) for r in mine):
+                text += "\n\n📎 Файлы — командой /taskfile"
+        thread_id = getattr(query.message, "message_thread_id", None) if query.message else None
+        if await send_ephemeral(context.bot, chat.id, update.effective_user.id, text,
+                                callback_query_id=query.id, thread_id=thread_id):
+            try:
+                await query.answer()  # harmless if Telegram already treated the send as the answer
+            except Exception:
+                pass
+            return
+
     rows = get_tasks(SHARED_TASKS_ID, only_undone=False, start=iso_day, end=iso_day,
                      viewer_id=_viewer(update))
     if not rows:
         alert_text = f"{d.strftime('%d.%m.%Y')} — заданий нет 🎉"
         full_text = None
     else:
-        lines = [f"{d.strftime('%d.%m.%Y')}:"]
-        for r in rows:
-            mark = "✅" if r["my_done"] else "▫️"
-            time_part = f" ({r['due_time']})" if r["due_time"] else ""
-            has_files = bool(get_task_attachments(r["id"]))
-            attach_part = " 📎" if has_files else ""
-            desc_part = " 📝" if r["description"] else ""
-            lines.append(f"{mark} [{SUBJECT_NAME[r['subject']]}] {r['title']}{time_part}{attach_part}{desc_part}")
-        full_text = "\n".join(lines)
+        full_text = "\n".join(_day_lines(d, rows, with_details=False))
         alert_text = full_text
         # Telegram caps a callback-query alert at 200 characters and errors
         # out (BadRequest) if it's longer, so keep the popup short and send
