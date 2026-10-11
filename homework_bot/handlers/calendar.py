@@ -1,15 +1,18 @@
 """The button calendar: /calendar, month navigation, and tapping a day to
 see (and drill into) that day's tasks."""
 
+import html
+import re
 from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from ..config import SHARED_TASKS_ID, logger
 from ..constants import MONTH_NAMES_RU, SUBJECT_NAME
-from ..db import get_task_attachments, get_tasks, register_chat
-from ..ephemeral import send_ephemeral
+from ..db import get_task, get_task_attachments, get_tasks, register_chat
+from ..ephemeral import send_ephemeral, send_ephemeral_file
 from ..keyboards import calendar_keyboard
 from ..utils import today_kz
 
@@ -53,7 +56,22 @@ async def calendar_noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
 
 
-def _day_lines(d, rows, with_details: bool):
+def _extra_buttons(rows, prefix: str = ""):
+    """📝 / 📎 buttons for tasks that have a description or attachments.
+    prefix "e" marks buttons living in a private (ephemeral) message."""
+    buttons = []
+    for r in rows:
+        if not (r["description"] or get_task_attachments(r["id"])):
+            continue
+        label = f"{SUBJECT_NAME[r['subject']]}: {r['title'][:30]}"
+        if r["description"]:
+            buttons.append([InlineKeyboardButton(f"📝 {label}", callback_data=f"{prefix}taskdesc:{r['id']}")])
+        if get_task_attachments(r["id"]):
+            buttons.append([InlineKeyboardButton(f"📎 {label}", callback_data=f"{prefix}taskfile:{r['id']}")])
+    return buttons
+
+
+def _day_lines(d, rows):
     lines = [f"{d.strftime('%d.%m.%Y')}:"]
     for r in rows:
         mark = "✅" if r["my_done"] else "▫️"
@@ -62,9 +80,6 @@ def _day_lines(d, rows, with_details: bool):
         attach_part = " 📎" if has_files else ""
         desc_part = " 📝" if r["description"] else ""
         lines.append(f"{mark} [{SUBJECT_NAME[r['subject']]}] {r['title']}{time_part}{attach_part}{desc_part}")
-        if with_details and r["description"]:
-            text = r["description"].strip()
-            lines.append("   " + (text[:300] + "…" if len(text) > 300 else text))
     return lines
 
 
@@ -84,12 +99,12 @@ async def calendar_day_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not mine:
             text = f"{d.strftime('%d.%m.%Y')} — заданий нет 🎉"
         else:
-            text = "\n".join(_day_lines(d, mine, with_details=True))
-            if any(get_task_attachments(r["id"]) for r in mine):
-                text += "\n\n📎 Файлы — командой /taskfile"
+            text = "\n".join(_day_lines(d, mine))
         thread_id = getattr(query.message, "message_thread_id", None) if query.message else None
+        buttons = _extra_buttons(mine, prefix="e")
         if await send_ephemeral(context.bot, chat.id, update.effective_user.id, text,
-                                callback_query_id=query.id, thread_id=thread_id):
+                                callback_query_id=query.id, thread_id=thread_id,
+                                reply_markup=InlineKeyboardMarkup(buttons) if buttons else None):
             try:
                 await query.answer()  # harmless if Telegram already treated the send as the answer
             except Exception:
@@ -102,7 +117,7 @@ async def calendar_day_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
         alert_text = f"{d.strftime('%d.%m.%Y')} — заданий нет 🎉"
         full_text = None
     else:
-        full_text = "\n".join(_day_lines(d, rows, with_details=False))
+        full_text = "\n".join(_day_lines(d, rows))
         alert_text = full_text
         # Telegram caps a callback-query alert at 200 characters and errors
         # out (BadRequest) if it's longer, so keep the popup short and send
@@ -123,16 +138,82 @@ async def calendar_day_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # buttons underneath to see the full description or open an attachment —
     # the popup alert itself can't carry buttons, send files, or fit a long
     # description (it's capped around 200 characters by Telegram)
-    with_extras = [r for r in rows if get_task_attachments(r["id"]) or r["description"]]
-    if with_extras:
-        buttons = []
-        for r in with_extras:
-            label = f"{SUBJECT_NAME[r['subject']]}: {r['title'][:30]}"
-            if r["description"]:
-                buttons.append([InlineKeyboardButton(f"📝 {label}", callback_data=f"taskdesc:{r['id']}")])
-            if get_task_attachments(r["id"]):
-                buttons.append([InlineKeyboardButton(f"📎 {label}", callback_data=f"taskfile:{r['id']}")])
+    buttons = _extra_buttons(rows)
+    if buttons:
         await query.message.reply_text(
             f"Подробнее про задания на {d.strftime('%d.%m.%Y')}:",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
+
+def _ephemeral_target(update: Update):
+    """(chat_id, thread_id) of the group the private message lives in."""
+    msg = update.callback_query.message
+    chat_id = update.effective_chat.id if update.effective_chat else msg.chat.id
+    return chat_id, getattr(msg, "message_thread_id", None)
+
+
+async def private_task_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A 📝 button inside a private (ephemeral) calendar message: the full
+    description goes back to that person only."""
+    query = update.callback_query
+    task_id = int(query.data.split(":")[1])
+    task = get_task(task_id)
+    if not task or not task["description"]:
+        await query.answer("Описания нет.", show_alert=True)
+        return
+    head = f"📝 [{SUBJECT_NAME[task['subject']]}] {task['title']}"
+    sent = False
+    try:
+        chat_id, thread_id = _ephemeral_target(update)
+        if task["description_html"]:
+            text = f"📝 [{html.escape(SUBJECT_NAME[task['subject']])}] {html.escape(task['title'])}:\n\n{task['description']}"
+            sent = await send_ephemeral(context.bot, chat_id, update.effective_user.id, text,
+                                        callback_query_id=query.id, thread_id=thread_id,
+                                        parse_mode=ParseMode.HTML)
+        if not sent:
+            plain = f"{head}:\n\n{task['description']}"
+            if task["description_html"]:
+                plain = f"{head}:\n\n" + html.unescape(re.sub(r"<[^>]+>", "", task["description"]))
+            sent = await send_ephemeral(context.bot, chat_id, update.effective_user.id, plain,
+                                        callback_query_id=query.id, thread_id=thread_id)
+    except Exception as e:
+        logger.warning("Private description failed: %s", e)
+    try:
+        if sent:
+            await query.answer()
+        else:  # last resort: a popup only this person sees
+            snippet = re.sub(r"<[^>]+>", "", task["description"])
+            await query.answer(html.unescape(snippet)[:190], show_alert=True)
+    except Exception:
+        pass
+
+
+async def private_task_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A 📎 button inside a private (ephemeral) calendar message."""
+    query = update.callback_query
+    task_id = int(query.data.split(":")[1])
+    task = get_task(task_id)
+    attachments = get_task_attachments(task_id) if task else []
+    if not task or not attachments:
+        await query.answer("Вложение не найдено.", show_alert=True)
+        return
+    caption = f"[{SUBJECT_NAME[task['subject']]}] {task['title']}"
+    ok = True
+    try:
+        chat_id, thread_id = _ephemeral_target(update)
+        for i, att in enumerate(attachments):
+            ok = await send_ephemeral_file(
+                context.bot, chat_id, update.effective_user.id, att["kind"], att["file_id"],
+                caption=caption if i == 0 else None,
+                callback_query_id=query.id if i == 0 else None, thread_id=thread_id,
+            ) and ok
+    except Exception as e:
+        logger.warning("Private file failed: %s", e)
+        ok = False
+    try:
+        if ok:
+            await query.answer()
+        else:
+            await query.answer("Не получилось показать файл здесь — открой его командой /taskfile.", show_alert=True)
+    except Exception:
+        pass
