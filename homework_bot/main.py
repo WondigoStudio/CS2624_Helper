@@ -165,7 +165,14 @@ from .handlers.roomphotos import (
     testphoto_chosen,
     testphoto_cmd,
 )
-from .handlers.calendar import calendar_cmd, calendar_day_tap, calendar_nav, calendar_noop
+from .handlers.calendar import (
+    calendar_cmd,
+    calendar_day_tap,
+    calendar_nav,
+    calendar_noop,
+    private_task_description,
+    private_task_file,
+)
 from .handlers.admin import backupnow_cmd, dbstatus_cmd, exportdb_cmd, lmsusers_cmd, testmorning_cmd, users_cmd, viewschedule_chosen, viewschedule_cmd
 from .handlers.social import call_cmd, set_report_cmd, topactions_cmd, track_group_members, sethere_cmd
 from .handlers.transcribe import handle_transcribe
@@ -436,6 +443,8 @@ def main():
     app.add_handler(CommandHandler("taskfile", taskfile_cmd))
     app.add_handler(CallbackQueryHandler(taskfile_chosen, pattern="^taskfile:"))
     app.add_handler(CallbackQueryHandler(taskdesc_chosen, pattern="^taskdesc:"))
+    app.add_handler(CallbackQueryHandler(private_task_description, pattern="^etaskdesc:"))
+    app.add_handler(CallbackQueryHandler(private_task_file, pattern="^etaskfile:"))
     app.add_handler(CommandHandler("calendar", calendar_cmd))
     app.add_handler(CallbackQueryHandler(calendar_nav, pattern="^cal:"))
     app.add_handler(CallbackQueryHandler(calendar_day_tap, pattern="^day:"))
@@ -556,7 +565,7 @@ def main():
     app.job_queue.run_repeating(check_reminders, interval=60, first=35)
     app.job_queue.run_repeating(check_task_deadline_reminders, interval=60, first=45)
     # LMS deadlines -> shared task list every 10 min (only for people who connected /lms)
-    app.job_queue.run_repeating(sync_lms_job, interval=900, first=120)
+    app.job_queue.run_repeating(sync_lms_job, interval=1800, first=120)
     # Multi-database backup (no-op unless DATABASE_URL_BACKUP2/3 are set —
     # see config.py). Every 6 hours into the first backup, once a night
     # (00:00 Almaty time) into the second.
