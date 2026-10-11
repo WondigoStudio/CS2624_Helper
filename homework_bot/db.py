@@ -2,6 +2,7 @@
 migrations, and every read/write query used by the bot."""
 
 import calendar
+import re
 import sqlite3
 import threading
 import time
@@ -117,13 +118,82 @@ def get_db_status() -> dict:
     }
 
 
+# --- Read cache for the per-minute jobs -----------------------------------
+# The scheduler wakes up every minute and used to run ~8 queries each time,
+# which keeps a serverless Postgres (Neon) awake round the clock and burns
+# its compute quota. Everything those jobs read is now cached in memory and
+# only reloaded after a *write to one of the tables it depends on* (tracked
+# per table, in this process — the bot is a single instance) or after
+# _CACHE_MAX_AGE as a safety net. Quiet minutes cost zero queries.
+_CACHE_MAX_AGE = 30 * 60
+_tver = {}          # table -> number of committed writes seen
+_ver_lock = threading.Lock()
+_cache = {}         # key -> (versions, loaded_at, value)
+_WRITE_RE = re.compile(
+    r"^\s*(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|UPDATE|DELETE\s+FROM)\s+(?:ONLY\s+)?\"?(\w+)", re.I
+)
+_READ_WORDS = ("SELECT", "PRAGMA", "CREATE", "ALTER", "DROP", "SET", "SHOW", "BEGIN", "COMMIT", "ROLLBACK")
+
+
+def _track_write(owner, sql: str):
+    m = _WRITE_RE.match(sql)
+    if m:
+        name = m.group(1).lower()
+    else:
+        words = sql.lstrip().split(None, 1)
+        if not words or words[0].upper() in _READ_WORDS:
+            return
+        name = "*"  # a write we could not attribute to a table: invalidate everything
+    owner.__dict__.setdefault("_pending", set()).add(name)
+
+
+def _flush_writes(owner):
+    pending = owner.__dict__.pop("_pending", None)
+    if pending:
+        with _ver_lock:
+            for t in pending:
+                _tver[t] = _tver.get(t, 0) + 1
+
+
+def _versions(tables):
+    with _ver_lock:
+        # the active DB index is part of the version: after a failover the
+        # cache must not keep serving the other database's data
+        return tuple(_tver.get(t, 0) for t in tables) + (_tver.get("*", 0), _active_db_index)
+
+
+def cached_read(key, tables, loader):
+    """loader() result, reused until one of `tables` is written."""
+    ver = _versions(tables)  # taken BEFORE loading: a write racing the load only causes a harmless reload
+    hit = _cache.get(key)
+    if hit and hit[0] == ver and time.time() - hit[1] < _CACHE_MAX_AGE:
+        return hit[2]
+    value = loader()
+    _cache[key] = (ver, time.time(), value)
+    return value
+
+
+class _SQConn(sqlite3.Connection):
+    def execute(self, sql, *args):
+        _track_write(self, sql)
+        return super().execute(sql, *args)
+
+    def executemany(self, sql, *args):
+        _track_write(self, sql)
+        return super().executemany(sql, *args)
+
+    def commit(self):
+        super().commit()
+        _flush_writes(self)
+
+
 def db():
     if USE_POSTGRES:
         taken = _pool_take()
         if taken is None:
             taken = _connect_with_failover()
         return _PGConn(*taken)
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = sqlite3.connect(DB_PATH, timeout=10, factory=_SQConn)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -144,6 +214,7 @@ class _PGConn:
 
     def execute(self, sql, params=()):
         sql = sql.replace("?", "%s")
+        _track_write(self, sql)
         for attempt in (0, 1):
             try:
                 cur = self._conn.cursor()
@@ -164,6 +235,7 @@ class _PGConn:
     def commit(self):
         self._conn.commit()
         self._statements = 0
+        _flush_writes(self)
 
     def close(self):
         _pool_give(self._conn, self._idx)
@@ -804,32 +876,31 @@ def get_overdue_task_dates_in_month(chat_id: int, year: int, month: int, viewer_
 
 
 def all_chat_ids():
-    conn = db()
-    rows = conn.execute("SELECT chat_id FROM chats").fetchall()
-    conn.close()
-    return [r["chat_id"] for r in rows]
+    return [r["chat_id"] for r in list_known_users()]
+
+
+def _all_lessons():
+    """Whole timetable, cached until `schedule` changes."""
+    def load():
+        conn = db()
+        rows = conn.execute("SELECT * FROM schedule").fetchall()
+        conn.close()
+        return rows
+    return cached_read("schedule_all", ("schedule",), load)
 
 
 def first_lesson_times(weekday: int) -> dict:
-    """{chat_id: earliest lesson time that weekday} — one query for everyone,
-    instead of one per chat."""
-    conn = db()
-    rows = conn.execute(
-        "SELECT chat_id, MIN(time) AS first_time FROM schedule WHERE weekday = ? GROUP BY chat_id",
-        (weekday,),
-    ).fetchall()
-    conn.close()
-    return {r["chat_id"]: r["first_time"] for r in rows}
+    """{chat_id: earliest lesson time that weekday} for everyone (from the cache)."""
+    out = {}
+    for r in _all_lessons():
+        if r["weekday"] == weekday and (r["chat_id"] not in out or r["time"] < out[r["chat_id"]]):
+            out[r["chat_id"]] = r["time"]
+    return out
 
 
 def lessons_starting_at(weekday: int, time_str: str):
     """Every lesson (all chats) that starts exactly at time_str that weekday."""
-    conn = db()
-    rows = conn.execute(
-        "SELECT * FROM schedule WHERE weekday = ? AND time = ?", (weekday, time_str)
-    ).fetchall()
-    conn.close()
-    return rows
+    return [r for r in _all_lessons() if r["weekday"] == weekday and r["time"] == time_str]
 
 
 def get_chat_thread(chat_id: int):
@@ -856,10 +927,12 @@ def set_chat_thread(chat_id: int, thread_id):
 
 
 def list_known_users():
-    conn = db()
-    rows = conn.execute("SELECT * FROM chats ORDER BY updated_at DESC").fetchall()
-    conn.close()
-    return rows
+    def load():
+        conn = db()
+        rows = conn.execute("SELECT * FROM chats ORDER BY updated_at DESC").fetchall()
+        conn.close()
+        return rows
+    return cached_read("chats_all", ("chats",), load)
 
 
 def display_name(row) -> str:
@@ -1027,10 +1100,12 @@ def get_reminders_for_user(user_id: int):
 
 
 def get_all_enabled_reminders():
-    conn = db()
-    rows = conn.execute("SELECT * FROM reminders WHERE enabled = 1").fetchall()
-    conn.close()
-    return rows
+    def load():
+        conn = db()
+        rows = conn.execute("SELECT * FROM reminders WHERE enabled = 1").fetchall()
+        conn.close()
+        return rows
+    return cached_read("reminders_enabled", ("reminders",), load)
 
 
 def get_reminder(reminder_id: int):
@@ -1102,12 +1177,14 @@ def confirm_reminder(reminder_id: int):
 
 
 def get_reminders_awaiting_confirmation():
-    conn = db()
-    rows = conn.execute(
-        "SELECT * FROM reminders WHERE enabled = 1 AND awaiting_confirmation = 1"
-    ).fetchall()
-    conn.close()
-    return rows
+    def load():
+        conn = db()
+        rows = conn.execute(
+            "SELECT * FROM reminders WHERE enabled = 1 AND awaiting_confirmation = 1"
+        ).fetchall()
+        conn.close()
+        return rows
+    return cached_read("reminders_waiting", ("reminders",), load)
 
 
 # --- Birthdays ---------------------------------------------------------
@@ -1216,3 +1293,14 @@ def mirror_active_db_to(target_url: str) -> bool:
     finally:
         src.close()
         dst.close()
+
+
+
+
+def pending_deadline_tasks(chat_id: int):
+    """Undone tasks (cached until tasks / task_done change) — what the
+    per-minute deadline check scans."""
+    return cached_read(
+        ("tasks_undone", chat_id), ("tasks", "task_done"),
+        lambda: get_tasks(chat_id, True),
+    )
