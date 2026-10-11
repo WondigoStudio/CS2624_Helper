@@ -59,7 +59,7 @@ async def lms_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     feed = get_lms_feed(update.effective_user.id)
     head = (
-        "✅ Календарь LMS уже подключён — дедлайны обновляются каждые 10 минут. "
+        "✅ Календарь LMS уже подключён — дедлайны обновляются каждые 30 минут. "
         "Чтобы заменить ссылку, пришли новую. Отключить: /lmsoff.\n\n"
         if feed else
         "Подключим календарь LMS: бот сам будет забирать дедлайны в список заданий.\n\n"
@@ -92,7 +92,7 @@ async def lms_url_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return LMS_URL
     save_lms_feed(update.effective_user.id, url)
     await status.edit_text(
-        "✅ Календарь подключён. Дальше я сам проверяю его каждые 10 минут. "
+        "✅ Календарь подключён. Дальше я сам проверяю его каждые 30 минут. "
         "Сообщение со ссылкой удалено.\n\n" + _format_report(report)
     )
     return ConversationHandler.END
