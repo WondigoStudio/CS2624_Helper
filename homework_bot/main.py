@@ -556,7 +556,7 @@ def main():
     app.job_queue.run_repeating(check_reminders, interval=60, first=35)
     app.job_queue.run_repeating(check_task_deadline_reminders, interval=60, first=45)
     # LMS deadlines -> shared task list every 10 min (only for people who connected /lms)
-    app.job_queue.run_repeating(sync_lms_job, interval=600, first=120)
+    app.job_queue.run_repeating(sync_lms_job, interval=900, first=120)
     # Multi-database backup (no-op unless DATABASE_URL_BACKUP2/3 are set —
     # see config.py). Every 6 hours into the first backup, once a night
     # (00:00 Almaty time) into the second.
