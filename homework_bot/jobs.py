@@ -34,6 +34,7 @@ from .db import (
     mark_reminder_fired,
     mark_task_deadline_notified,
     mirror_active_db_to,
+    pending_deadline_tasks,
     users_who_finished,
     viewer_for_chat,
 )
@@ -425,7 +426,7 @@ async def check_task_deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
     instead of silently skipping it, same reasoning as check_reminders.
     deadline_notified guards against sending it more than once."""
     now = now_kz()
-    rows = await asyncio.to_thread(get_tasks, SHARED_TASKS_ID, True)
+    rows = await asyncio.to_thread(pending_deadline_tasks, SHARED_TASKS_ID)
     for row in rows:
         if row["deadline_notified"]:
             continue
