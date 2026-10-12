@@ -15,7 +15,9 @@ THIRD = 100 / 3
 
 
 def _c(k, label, mx, outof=None):
-    return {"k": k, "l": label, "max": mx, "outof": outof if outof is not None else mx}
+    # Every score is entered as a percentage (0–100), exactly like the LMS gradebook shows it;
+    # `max` is only the weight of the item inside its attestation.
+    return {"k": k, "l": label, "max": mx, "outof": outof if outof is not None else 100}
 
 
 _STD_WEIGHTS = [0.3, 0.3, 0.4]
@@ -236,6 +238,8 @@ def valid_scores(code: str, raw) -> dict:
             limits[c["k"]] = c["outof"]
     if sy.get("final"):
         limits["final"] = sy["final"]["outof"]
+    for i in range(len(sy["atts"])):
+        limits[f"att{i + 1}"] = 100  # "from the LMS" mode: Register Midterm / Register Endterm as shown there
     out = {}
     for k, v in raw.items():
         if k not in limits or isinstance(v, bool):
