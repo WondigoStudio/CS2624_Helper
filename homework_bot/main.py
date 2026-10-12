@@ -10,6 +10,7 @@ from datetime import time as dtime
 from telegram import MenuButtonWebApp, WebAppInfo
 from telegram.error import Conflict
 
+from .activity import flush_activity_job, handler as activity_handler
 from .bot_commands import sync_commands
 
 from telegram.ext import (
@@ -173,7 +174,18 @@ from .handlers.calendar import (
     private_task_description,
     private_task_file,
 )
-from .handlers.admin import backupnow_cmd, dbstatus_cmd, exportdb_cmd, lmsusers_cmd, testmorning_cmd, users_cmd, viewschedule_chosen, viewschedule_cmd
+from .handlers.admin import (
+    activity_cmd,
+    backupnow_cmd,
+    dbstatus_cmd,
+    exportdb_cmd,
+    lmsusers_cmd,
+    testmorning_cmd,
+    users_cmd,
+    viewschedule_chosen,
+    viewschedule_cmd,
+)
+from .handlers.syllabus import syllabus_callback, syllabus_cmd
 from .handlers.social import call_cmd, set_report_cmd, topactions_cmd, track_group_members, sethere_cmd
 from .handlers.transcribe import handle_transcribe
 from .handlers.translate import handle_translate_reply, inline_translate
@@ -446,6 +458,8 @@ def main():
     app.add_handler(CallbackQueryHandler(private_task_description, pattern="^etaskdesc:"))
     app.add_handler(CallbackQueryHandler(private_task_file, pattern="^etaskfile:"))
     app.add_handler(CommandHandler("calendar", calendar_cmd))
+    app.add_handler(CommandHandler("syllabus", syllabus_cmd))
+    app.add_handler(CallbackQueryHandler(syllabus_callback, pattern="^syl:"))
     app.add_handler(CallbackQueryHandler(calendar_nav, pattern="^cal:"))
     app.add_handler(CallbackQueryHandler(calendar_day_tap, pattern="^day:"))
     app.add_handler(CallbackQueryHandler(calendar_noop, pattern="^noop$"))
@@ -464,6 +478,7 @@ def main():
     app.add_handler(CommandHandler("lmssync", lmssync_cmd))
     app.add_handler(CommandHandler("lmsusers", lmsusers_cmd))
     app.add_handler(CommandHandler("exportdb", exportdb_cmd))
+    app.add_handler(CommandHandler("activity", activity_cmd))
     app.add_handler(CommandHandler("backupnow", backupnow_cmd))
     app.add_handler(CommandHandler("viewschedule", viewschedule_cmd))
     app.add_handler(CallbackQueryHandler(viewschedule_chosen, pattern="^viewsch:"))
@@ -485,6 +500,9 @@ def main():
     # ----------------------------------------------------
     # Модули расширений (Голос / Перевод)
     # ----------------------------------------------------
+    # Журнал действий: кто какую команду/кнопку нажал (до всех остальных обработчиков)
+    app.add_handler(activity_handler(), group=-2)
+
     # Автоматическое отслеживание ВСЕХ участников группы (для созыва)
     app.add_handler(
         MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, track_group_members),
@@ -569,6 +587,7 @@ def main():
     # Multi-database backup (no-op unless DATABASE_URL_BACKUP2/3 are set —
     # see config.py). Every 6 hours into the first backup, once a night
     # (00:00 Almaty time) into the second.
+    app.job_queue.run_repeating(flush_activity_job, interval=60, first=60)
     app.job_queue.run_repeating(backup_to_secondary, interval=6 * 3600, first=300)
     app.job_queue.run_daily(backup_to_tertiary, time=dtime(hour=0, minute=0, tzinfo=TIMEZONE))
 
