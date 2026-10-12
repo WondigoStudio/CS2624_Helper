@@ -32,7 +32,10 @@ from urllib.parse import parse_qsl
 from .ai_format import STRUCTURE_MIN_LENGTH, _sanitize_telegram_html, _structure_with_groq
 from .config import BOT_TOKEN, GROQ_API_KEY, SHARED_TASKS_ID, logger, requests
 from .constants import SUBJECT_EMOJI, SUBJECT_NAME, SUBJECTS
+from .syllabi import SCALE, SYLLABI, valid_scores
 from .db import (
+    get_grades,
+    save_grades,
     add_birthday,
     add_lesson,
     add_task,
@@ -171,6 +174,7 @@ def build_state(user: dict) -> dict:
         "lessons": lessons,
         "birthdays": birthdays,
         "stats": {"done": len(finished), "todo": len(todo)},
+        "grades": get_grades(uid),
     }
     if admin:
         status = get_db_status()
@@ -411,7 +415,17 @@ def act_bday_delete(user, body):
     return {"ok": True}
 
 
+def act_grades_save(user, body):
+    """Saves one subject's scores from the calculator (blank fields are simply absent)."""
+    subject = body.get("subject")
+    if subject not in SYLLABI:
+        raise ApiError(400, "bad_subject")
+    save_grades(user["id"], subject, valid_scores(subject, body.get("scores")))
+    return {"ok": True}
+
+
 _ROUTES = {
+    "/api/grades/save": act_grades_save,
     "/api/state": act_state,
     "/api/done": act_done,
     "/api/undone": act_undone,
@@ -434,6 +448,12 @@ def _index_page():
     mtime = _INDEX_PATH.stat().st_mtime
     if _index_cache["mtime"] != mtime:
         raw = _INDEX_PATH.read_bytes()
+        # static syllabus data is embedded in the page itself (it changes only with a deploy)
+        raw = raw.replace(
+            b"/*SYLLABI_JSON*/null",
+            json.dumps({"syllabi": SYLLABI, "scale": SCALE}, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/").encode("utf-8"),
+            1,
+        )
         _index_cache.update(
             mtime=mtime, raw=raw, gz=gzip.compress(raw, 6),
             etag='"' + hashlib.md5(raw).hexdigest() + '"',
