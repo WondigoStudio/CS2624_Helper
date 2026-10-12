@@ -121,6 +121,29 @@
   @keyframes shimmer { to { background-position: -200% 0; } }
   .check, .chipbtn, .btn, nav button, .filters button { touch-action: manipulation; }
   .card { contain: content; }
+
+  /* grades calculator */
+  .gr-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .gr-big { font-size: 40px; font-weight: 800; letter-spacing: -.03em; line-height: 1.05; }
+  .gr-letter { font-size: 22px; font-weight: 700; color: var(--accent); }
+  .gr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  .gr-grid .box { background: var(--bg2); border-radius: 12px; padding: 9px 11px; }
+  .gr-grid .box b { display: block; font-size: 18px; }
+  .grin { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--bg2); }
+  .grin:first-of-type { border-top: 0; }
+  .grin input { width: 86px; flex: none; text-align: right; padding: 8px 10px; }
+  .grin .of { width: 44px; flex: none; color: var(--hint); font-size: 13px; }
+  .warn { margin-top: 10px; padding: 9px 12px; border-radius: 12px; font-size: 14px;
+    background: color-mix(in srgb, var(--danger) 13%, transparent); color: var(--danger); }
+  .warn.soft { background: color-mix(in srgb, #f5a524 18%, transparent); color: #b7791f; }
+  .goodbox { margin-top: 10px; padding: 9px 12px; border-radius: 12px; font-size: 14px;
+    background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .partrow { display: flex; justify-content: space-between; font-size: 14px; padding: 3px 0; }
+  details.card summary { cursor: pointer; font-weight: 600; list-style: none; }
+  details.card summary::-webkit-details-marker { display: none; }
+  details.card ul { margin: 10px 0 0; padding-left: 18px; font-size: 14px; }
+  details.card li { margin: 4px 0; }
+  nav button { min-width: 0; }
 </style>
 </head>
 <body>
@@ -135,6 +158,7 @@
   <section class="view" id="v-tasks"></section>
   <section class="view" id="v-cal"></section>
   <section class="view" id="v-week"></section>
+  <section class="view" id="v-grades"></section>
   <section class="view" id="v-more"></section>
 </main>
 
@@ -145,6 +169,7 @@
   <button data-tab="tasks"><span>📚</span>Задания</button>
   <button data-tab="cal"><span>📆</span>Календарь</button>
   <button data-tab="week"><span>🗓</span>Неделя</button>
+  <button data-tab="grades"><span>🎓</span>Баллы</button>
   <button data-tab="more"><span>⋯</span>Ещё</button>
 </nav>
 
@@ -376,7 +401,153 @@ function renderMore() {
   $("v-more").innerHTML = h;
 }
 
-const VIEWS = { today: renderToday, tasks: renderTasks, cal: renderCal, week: renderWeek, more: renderMore };
+
+/* ---------- grades calculator ---------- */
+const GR = /*SYLLABI_JSON*/null;
+const TARGETS = [["A", 95], ["A-", 90], ["B+", 85], ["B", 80], ["B-", 75], ["C+", 70], ["C", 65], ["C-", 60], ["D+", 55], ["D", 50]];
+const gui = { sub: null, target: 90 };
+let gSaveTimer = null;
+function fmt(x) { const r = Math.round(x * 10) / 10; return String(r).replace(".", ","); }
+function gcomps(sy) {
+  const out = [];
+  sy.atts.forEach((a, i) => {
+    a.reg.forEach(c => out.push(Object.assign({}, c, { att: i, part: "reg", cp: sy.weights[i] * c.max })));
+    a.exam.forEach(c => out.push(Object.assign({}, c, { att: i, part: "exam", cp: sy.weights[i] * c.max })));
+  });
+  if (sy.final) out.push({ k: "final", l: sy.final.l, max: 100, outof: sy.final.outof, att: -1, part: "final", cp: sy.weights[2] * 100 });
+  return out;
+}
+const isNum = (v) => typeof v === "number" && isFinite(v);
+function gletter(total, sy) {
+  for (const [min, name] of GR.scale.map(r => [r[0], r[1]])) if (total >= min) return name;
+  return total >= (sy.scale_fx || 25) ? "FX" : "F";
+}
+function gcalc(sy, sc) {
+  const comps = gcomps(sy);
+  let cur = 0, lost = 0, gradedCp = 0, remCp = 0, remNonFinal = 0, cpFinal = 0, finalGraded = false;
+  comps.forEach(c => {
+    if (c.part === "final") cpFinal = c.cp;
+    if (isNum(sc[c.k])) { const e = sc[c.k] / c.outof * c.cp; cur += e; lost += c.cp - e; gradedCp += c.cp; if (c.part === "final") finalGraded = true; }
+    else { remCp += c.cp; if (c.part !== "final") remNonFinal += c.cp; }
+  });
+  const atts = sy.atts.map((a, i) => {
+    const part = (p) => {
+      let earned = 0, max = 0, gmax = 0;
+      comps.filter(c => c.att === i && c.part === p).forEach(c => { max += c.max; if (isNum(sc[c.k])) { earned += sc[c.k] / c.outof * c.max; gmax += c.max; } });
+      return { earned, max, gmax };
+    };
+    const reg = part("reg"), exam = part("exam");
+    const total = reg.earned + exam.earned;
+    return { reg, exam, total, best: 100 - ((reg.gmax - reg.earned) + (exam.gmax - exam.earned)),
+      complete: reg.gmax === reg.max && exam.gmax === exam.max, contrib: total * sy.weights[i] };
+  });
+  return { comps, cur, best: 100 - lost, gradedCp, remCp, remNonFinal, cpFinal, finalGraded, atts,
+    pace: gradedCp > 0 ? cur / gradedCp : null, all: remCp === 0 };
+}
+function gwarnings(sy, r, sc) {
+  const w = [];
+  if (sy.min_att) r.atts.forEach((a, i) => {
+    if (a.complete && a.total < sy.min_att) w.push(["bad", `${sy.atts[i].name}: ${fmt(a.total)} — меньше ${sy.min_att}%, это провал курса`]);
+    else if (a.best < sy.min_att) w.push(["bad", `${sy.atts[i].name}: даже с максимумом за остальное выйдет меньше ${sy.min_att}% — курс под угрозой`]);
+    else if (a.total < sy.min_att && (a.reg.gmax + a.exam.gmax) > 0) w.push(["soft", `${sy.atts[i].name}: пока ${fmt(a.total)} — нужно набрать минимум ${sy.min_att}%`]);
+  });
+  if (sy.min_exam) r.comps.filter(c => c.part === "exam").forEach(c => {
+    if (isNum(sc[c.k]) && sc[c.k] / c.outof * 100 < sy.min_exam) w.push(["bad", `${c.l}: меньше ${sy.min_exam}% — автоматический провал`]);
+  });
+  if (sy.min_final && isNum(sc.final) && sc.final < sy.min_final) w.push(["bad", `Финал меньше ${sy.min_final}% — провал курса`]);
+  if (sy.min_total && r.all && r.cur < sy.min_total) w.push(["bad", `Итог ниже ${sy.min_total} — курс не сдан`]);
+  return w;
+}
+function gtargetText(sy, r, T) {
+  if (r.cur >= T) return `<div class="goodbox">Цель ${T}+ уже достигнута 🎉</div>`;
+  if (r.best < T) return `<div class="warn">Цель ${T} недостижима: максимум, который ещё можно получить, — ${fmt(r.best)}.</div>`;
+  const need = T - r.cur;
+  let h = `<div class="sub" style="margin-top:10px">Чтобы получить <b>${T}+</b>, нужно добрать <b>${fmt(need)}</b> из оставшихся <b>${fmt(r.remCp)}</b> баллов курса — это ${fmt(need / r.remCp * 100)}% от того, что ещё не оценено.</div>`;
+  if (sy.final && !r.finalGraded && r.cpFinal > 0) {
+    const atMax = (T - r.cur - r.remNonFinal) / r.cpFinal * sy.final.outof;
+    h += `<div class="sub" style="margin-top:6px">Финал: ${atMax <= 0 ? "хватит и минимума, если остальное сдашь на максимум" : "минимум <b>" + fmt(atMax) + "</b> из " + sy.final.outof + ", если остальное сдашь на максимум"}.</div>`;
+    if (r.pace !== null) {
+      const atPace = (T - r.cur - r.remNonFinal * r.pace) / r.cpFinal * sy.final.outof;
+      h += `<div class="sub" style="margin-top:6px">Если остальное будет на нынешнем уровне (${fmt(r.pace * 100)}%): на финале нужно <b>${atPace <= 0 ? "любой балл" : atPace > sy.final.outof ? "больше максимума — не хватит" : fmt(atPace) + " из " + sy.final.outof}</b>.</div>`;
+    }
+  }
+  return h;
+}
+function gResultHtml(sy, sc) {
+  const r = gcalc(sy, sc);
+  const letter = gletter(r.cur, sy);
+  let h = `<div class="gr-head"><div><div class="sub">Сейчас набрано</div><div class="gr-big">${fmt(r.cur)}<span class="sub" style="font-size:18px"> / 100</span></div></div>
+    <div class="gr-letter">${r.all ? "Итог: " + letter : r.pace === null ? "" : "прогноз: " + gletter(r.pace * 100, sy)}</div></div>
+    <div class="gr-grid">
+      <div class="box"><span class="sub">Максимум теперь</span><b>${fmt(r.best)}</b></div>
+      <div class="box"><span class="sub">Потеряно</span><b>${fmt(100 - r.best)}</b></div>
+      <div class="box"><span class="sub">Осталось оценить</span><b>${fmt(r.remCp)}</b></div>
+      <div class="box"><span class="sub">Прогноз (в том же темпе)</span><b>${r.pace === null ? "—" : fmt(r.pace * 100) + " · " + gletter(r.pace * 100, sy)}</b></div>
+    </div>`;
+  r.atts.forEach((a, i) => {
+    h += `<div style="margin-top:14px"><div class="sub" style="font-weight:600">${esc(sy.atts[i].name)} — ${fmt(a.total)} / 100 <span style="font-weight:400">(в курс: ${fmt(a.contrib)} из ${fmt(sy.weights[i] * 100)})</span></div>`;
+    if (sy.atts[i].reg.length) h += `<div class="partrow"><span>РегМид (работы до экзамена)</span><span>${fmt(a.reg.earned)} / ${fmt(a.reg.max)}${a.reg.gmax ? " · " + fmt(a.reg.earned / a.reg.gmax * 100) + "%" : ""}</span></div>`;
+    h += `<div class="partrow"><span>Мид / Энд (экзамен)</span><span>${fmt(a.exam.earned)} / ${fmt(a.exam.max)}${a.exam.gmax ? " · " + fmt(a.exam.earned / a.exam.gmax * 100) + "%" : ""}</span></div></div>`;
+  });
+  if (sy.final) h += `<div class="partrow" style="margin-top:8px"><span>Финал (вклад в курс)</span><span>${isNum(sc.final) ? fmt(sc.final / sy.final.outof * r.cpFinal) : "—"} / ${fmt(r.cpFinal)}</span></div>`;
+  gwarnings(sy, r, sc).forEach(([t, m]) => h += `<div class="warn ${t === "soft" ? "soft" : ""}">⚠️ ${esc(m)}</div>`);
+  h += `<label style="margin-top:14px">Какую оценку хочу</label><select id="gr-target">${TARGETS.map(([n, v]) => `<option value="${v}" ${v === gui.target ? "selected" : ""}>${n} (от ${v})</option>`).join("")}</select>`;
+  h += `<div id="gr-need">${gtargetText(sy, r, gui.target)}</div>`;
+  return h;
+}
+function renderGrades() {
+  const el = $("v-grades");
+  if (!GR || !GR.syllabi) { el.innerHTML = `<div class="card empty">Данные силлабусов недоступны.</div>`; return; }
+  const subs = state.subjects.filter(s => GR.syllabi[s.code]);
+  if (!subs.length) { el.innerHTML = `<div class="card empty">Нет предметов.</div>`; return; }
+  if (!gui.sub || !GR.syllabi[gui.sub]) gui.sub = subs[0].code;
+  const sy = GR.syllabi[gui.sub];
+  const sc = (state.grades && state.grades[gui.sub]) || {};
+  let h = `<div class="filters">${subs.map(s => `<button class="${s.code === gui.sub ? "on" : ""}" data-act="gsub" data-v="${esc(s.code)}">${esc(s.emoji)} ${esc(s.name)}</button>`).join("")}</div>`;
+  h += `<details class="card" style="margin-top:12px"><summary>📋 ${esc(sy.title)}${sy.credits ? " · " + sy.credits + " кр." : ""} — кратко о курсе</summary>
+    <div class="sub" style="margin-top:8px">${sy.final ? `Итог = ${sy.weights[0] * 100}% 1-я аттестация + ${sy.weights[1] * 100}% 2-я + ${sy.weights[2] * 100}% финал` : `Итог = ${sy.weights[0] * 100}% Midterm + ${sy.weights[1] * 100}% Endterm`}</div>
+    ${sy.note ? `<div class="note">${esc(sy.note)}</div>` : ""}<ul>${sy.facts.map(f => `<li>${esc(f)}</li>`).join("")}</ul></details>`;
+  sy.atts.forEach((a) => {
+    h += `<h2>${esc(a.name)}</h2><div class="card">`;
+    const row = (c) => `<div class="grin"><div class="grow"><div style="font-size:15px">${esc(c.l)}</div><div class="sub" style="font-size:12px">вес в аттестации: ${fmt(c.max)} б.</div></div>
+      <input type="text" inputmode="decimal" autocomplete="off" data-max="${c.outof}" placeholder="—" data-gk="${esc(c.k)}" value="${isNum(sc[c.k]) ? sc[c.k] : ""}"><span class="of">/ ${fmt(c.outof)}</span></div>`;
+    if (a.reg.length) h += `<div class="sub" style="font-weight:600;margin-bottom:2px">РегМид — работы до экзамена</div>` + a.reg.map(row).join("");
+    h += `<div class="sub" style="font-weight:600;margin:${a.reg.length ? "10px" : "0"} 0 2px">Мид / Энд — экзамен</div>` + a.exam.map(row).join("") + `</div>`;
+  });
+  if (sy.final) h += `<h2>Финал</h2><div class="card"><div class="grin"><div class="grow"><div style="font-size:15px">${esc(sy.final.l)}</div><div class="sub" style="font-size:12px">вес в курсе: ${sy.weights[2] * 100}%</div></div>
+      <input type="text" inputmode="decimal" autocomplete="off" data-max="${sy.final.outof}" placeholder="—" data-gk="final" value="${isNum(sc.final) ? sc.final : ""}"><span class="of">/ ${sy.final.outof}</span></div></div>`;
+  h += `<h2>Итог</h2><div class="card" id="gr-out">${gResultHtml(sy, sc)}</div>
+    <div class="note" style="margin:6px 4px">Оставляй поле пустым, пока работа не оценена. Баллы сохраняются на сервере. Расчёт — по силлабусам 2026–2027, официальные оценки смотри в LMS.</div>`;
+  el.innerHTML = h;
+}
+function gOnInput(inp) {
+  const sy = GR.syllabi[gui.sub];
+  if (!state.grades) state.grades = {};
+  const sc = state.grades[gui.sub] = state.grades[gui.sub] || {};
+  const k = inp.dataset.gk, raw = inp.value.trim().replace(",", ".");
+  const max = Number(inp.dataset.max);
+  if (raw === "") delete sc[k];
+  else { let v = Number(raw); if (!isFinite(v) || raw.endsWith(".")) return; v = Math.min(Math.max(v, 0), max); sc[k] = v; if (v !== Number(raw)) inp.value = v; }
+  $("gr-out").innerHTML = gResultHtml(sy, sc);
+  clearTimeout(gSaveTimer);
+  const code = gui.sub, snap = Object.assign({}, sc);
+  gSaveTimer = setTimeout(async () => {
+    try { await api("/api/grades/save", { subject: code, scores: snap }); gSaveTimer = null; try { localStorage.setItem(CACHE_KEY, JSON.stringify(state)); } catch (e) {} }
+    catch (e) { gSaveTimer = null; toast("Не удалось сохранить баллы — проверь связь"); }
+  }, 700);
+}
+document.addEventListener("input", (ev) => {
+  if (ev.target.dataset && ev.target.dataset.gk && state && GR) gOnInput(ev.target);
+});
+document.addEventListener("change", (ev) => {
+  if (ev.target.id === "gr-target" && state && GR) {
+    gui.target = Number(ev.target.value);
+    const sy = GR.syllabi[gui.sub], sc = (state.grades && state.grades[gui.sub]) || {};
+    $("gr-need").innerHTML = gtargetText(sy, gcalc(sy, sc), gui.target);
+  }
+});
+
+const VIEWS = { today: renderToday, tasks: renderTasks, cal: renderCal, week: renderWeek, grades: renderGrades, more: renderMore };
 const dirty = new Set(Object.keys(VIEWS));
 function renderView(tab) { if (dirty.has(tab)) { dirty.delete(tab); VIEWS[tab](); } }
 
@@ -393,13 +564,14 @@ function render() {
 }
 
 function showFatal(msg) {
-  ["v-tasks", "v-cal", "v-week", "v-more"].forEach(id => $(id).innerHTML = "");
+  ["v-tasks", "v-cal", "v-week", "v-grades", "v-more"].forEach(id => $(id).innerHTML = "");
   $("progress").innerHTML = ""; $("fab").classList.remove("show");
   $("v-today").innerHTML = `<div class="card empty">${esc(msg)}</div>`;
 }
 
 const CACHE_KEY = "hw_state_v2";
 function applyState(s) {
+  if (gSaveTimer && state && state.grades) s.grades = state.grades;  // unsaved edits win over a refresh
   state = s; render();
   try { localStorage.setItem(CACHE_KEY, JSON.stringify(s)); } catch (e) {}
 }
@@ -537,6 +709,7 @@ document.addEventListener("click", async (ev) => {
     case "delbday": confirmDo("Удалить этот день рождения у всех?", () => act("/api/bday/delete", { id }, "Удалено")); break;
     case "calnav": { const d = new Date(ui.calY, ui.calM + Number(el.dataset.d), 1); ui.calY = d.getFullYear(); ui.calM = d.getMonth(); ui.calDay = null; render(); break; }
     case "calday": ui.calDay = el.dataset.iso; render(); break;
+    case "gsub": gui.sub = el.dataset.v; dirty.add("grades"); renderView("grades"); break;
     case "closesheet": closeSheet(); break;
   }
 });
