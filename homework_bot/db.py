@@ -526,11 +526,38 @@ def init_db(target_url: str = None):
         # Safe/no-op if the column is already BIGINT.
         for table in ("chats", "tasks", "schedule", "room_photos", "reminders", "birthdays"):
             conn.execute(f"ALTER TABLE {table} ALTER COLUMN chat_id TYPE BIGINT")
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id {id_pk},
+            ts TEXT NOT NULL,
+            user_id BIGINT,
+            chat_id BIGINT,
+            chat_type TEXT,
+            chat_title TEXT,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS grades (
+            user_id BIGINT NOT NULL,
+            subject TEXT NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (user_id, subject)
+        )
+        """
+    )
     for ddl in (
         "CREATE INDEX IF NOT EXISTS idx_tasks_chat_due ON tasks (chat_id, due_date)",
         "CREATE INDEX IF NOT EXISTS idx_task_done_user ON task_done (user_id)",
         "CREATE INDEX IF NOT EXISTS idx_schedule_chat_wd ON schedule (chat_id, weekday)",
         "CREATE INDEX IF NOT EXISTS idx_schedule_wd_time ON schedule (weekday, time)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity_log (ts)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_user ON activity_log (user_id, ts)",
     ):
         conn.execute(ddl)
     conn.commit()
@@ -1239,7 +1266,7 @@ def delete_birthday(birthday_id: int):
 _MIRROR_TABLES = [
     "tasks", "task_attachments", "task_done", "lms_synced", "lms_feeds", "chats", "schedule", "room_photos", "actions",
     "schedule_allowed_users", "user_perms", "report_settings", "group_members", "report_chats",
-    "reminders", "birthdays", "chat_threads",
+    "reminders", "birthdays", "chat_threads", "grades",
 ]
 
 
@@ -1304,3 +1331,83 @@ def pending_deadline_tasks(chat_id: int):
         ("tasks_undone", chat_id), ("tasks", "task_done"),
         lambda: get_tasks(chat_id, True),
     )
+
+
+# --- Activity log (who did what) -------------------------------------------
+def insert_activity(rows):
+    """rows: [(ts, user_id, chat_id, chat_type, chat_title, kind, name)] in one transaction."""
+    if not rows:
+        return
+    conn = db()
+    for r in rows:
+        conn.execute(
+            "INSERT INTO activity_log (ts, user_id, chat_id, chat_type, chat_title, kind, name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)", r,
+        )
+    conn.commit()
+    conn.close()
+
+
+def recent_activity(limit: int = 30, user_id: int = None):
+    conn = db()
+    if user_id is None:
+        rows = conn.execute("SELECT * FROM activity_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM activity_log WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit)
+        ).fetchall()
+    conn.close()
+    return rows
+
+
+def activity_stats(since_iso: str):
+    """[(user_id, count, last_ts)] since the given ISO time, busiest first."""
+    conn = db()
+    rows = conn.execute(
+        "SELECT user_id, COUNT(*) AS c, MAX(ts) AS last_ts FROM activity_log "
+        "WHERE ts >= ? GROUP BY user_id ORDER BY c DESC", (since_iso,),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def prune_activity(before_iso: str):
+    conn = db()
+    conn.execute("DELETE FROM activity_log WHERE ts < ?", (before_iso,))
+    conn.commit()
+    conn.close()
+
+
+# --- Grade calculator (Mini App "Баллы"): each person's scores per subject ----
+def get_grades(user_id: int) -> dict:
+    """{subject: {component key: score}} for one person."""
+    import json
+
+    def load():
+        conn = db()
+        rows = conn.execute("SELECT subject, data FROM grades WHERE user_id = ?", (user_id,)).fetchall()
+        conn.close()
+        return rows
+    out = {}
+    for r in load():
+        try:
+            out[r["subject"]] = json.loads(r["data"])
+        except Exception:
+            continue
+    return out
+
+
+def save_grades(user_id: int, subject: str, scores: dict):
+    import json
+
+    conn = db()
+    if not scores:
+        conn.execute("DELETE FROM grades WHERE user_id = ? AND subject = ?", (user_id, subject))
+    else:
+        conn.execute(
+            "INSERT INTO grades (user_id, subject, data, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(user_id, subject) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+            (user_id, subject, json.dumps(scores, ensure_ascii=False), now_kz().isoformat()),
+        )
+    conn.commit()
+    conn.close()
