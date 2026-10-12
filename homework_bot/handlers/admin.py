@@ -11,7 +11,10 @@ from telegram.ext import ContextTypes
 
 from ..config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3
 from ..constants import WEEKDAY_EMOJI, WEEKDAY_NAMES_FULL_RU
+from ..activity import describe, flush_now
 from ..db import (
+    activity_stats,
+    recent_activity,
     display_name,
     export_all_tables,
     get_chat_info,
@@ -26,7 +29,7 @@ from ..db import (
 from ..formatting import format_lessons_block
 from ..jobs import send_morning_schedule_for_chat
 from ..permissions import is_admin
-from ..utils import now_kz
+from ..utils import _chunk_text, now_kz
 
 
 async def backupnow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -214,3 +217,70 @@ async def exportdb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buf.name = f"homework_bot_backup_{now_kz().strftime('%Y-%m-%d_%H-%M')}.json"
     counts = ", ".join(f"{t}: {len(r)}" for t, r in data.items() if r)
     await update.message.reply_document(buf, caption=f"💾 Бэкап базы. Строк по таблицам — {counts}"[:1000])
+
+
+def _fmt_ts(ts: str) -> str:
+    try:
+        return f"{ts[8:10]}.{ts[5:7]} {ts[11:16]}"
+    except Exception:
+        return ts or "—"
+
+
+async def activity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: who did what. /activity — latest actions; /activity 80 — more;
+    /activity <имя, @username или id> — one person; /activity stats — who is
+    most active. Only commands and button presses are recorded, never the
+    text of messages."""
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда доступна только администраторам бота.")
+        return
+    await asyncio.to_thread(flush_now)
+    users = list_known_users()
+    names = {r["chat_id"]: display_name(r) for r in users}
+    arg = " ".join(context.args).strip() if context.args else ""
+
+    if arg.lower() in ("stats", "stat", "top", "топ", "статистика"):
+        now = now_kz()
+        parts = []
+        for label, delta in (("за 24 часа", 1), ("за 7 дней", 7)):
+            from datetime import timedelta
+            rows = await asyncio.to_thread(activity_stats, (now - timedelta(days=delta)).isoformat(timespec="seconds"))
+            lines = [f"📊 Активность {label}:"]
+            for r in rows[:15]:
+                lines.append(f"• {names.get(r['user_id'], 'id' + str(r['user_id']))} — {r['c']} (последнее {_fmt_ts(r['last_ts'])})")
+            parts.append("\n".join(lines) if rows else f"📊 Активность {label}: пока пусто")
+        await update.message.reply_text("\n\n".join(parts))
+        return
+
+    limit, user_id, title = 40, None, "Последние действия"
+    if arg:
+        if arg.isdigit() and int(arg) < 1000:
+            limit = max(1, min(int(arg), 150))
+        else:
+            needle = arg.lstrip("@").lower()
+            match = None
+            for r in users:
+                if str(r["chat_id"]) == needle or needle in display_name(r).lower():
+                    match = r
+                    break
+            if match is None:
+                await update.message.reply_text("Не нашёл такого человека. Напиши имя, @username или id.")
+                return
+            user_id = match["chat_id"]
+            title = f"Действия: {display_name(match)}"
+    rows = await asyncio.to_thread(recent_activity, limit, user_id)
+    lines = []
+    for r in rows:
+        action = describe(r["kind"], r["name"])
+        if not action:
+            continue
+        where = "личка" if r["chat_type"] == "private" else (r["chat_title"] or "группа")
+        who = "" if user_id is not None else f"{names.get(r['user_id'], 'id' + str(r['user_id']))} · "
+        lines.append(f"{_fmt_ts(r['ts'])} {who}{where} · {action}")
+    if not lines:
+        await update.message.reply_text("Пока ничего не записано.")
+        return
+    text = f"🧾 {title} ({len(lines)}):\n" + "\n".join(lines)
+    for chunk in _chunk_text(text):
+        await update.message.reply_text(chunk)
