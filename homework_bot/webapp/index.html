@@ -528,7 +528,7 @@ function renderGrades() {
     if (sy.final) h += `<div class="grin"><div class="grow"><div style="font-size:15px">Финал</div><div class="sub" style="font-size:12px">${esc(sy.final.l)} · вес в курсе ${sy.weights[2] * 100}%</div></div>${inp("final", sy.final.outof, sc.final)}</div>`;
     h += `</div>`;
   } else {
-    h += `<div class="note" style="margin:8px 4px 0">Оценки вводи в процентах (0–100) — так, как их показывает LMS у каждой работы.</div>`;
+    h += `<div class="note" style="margin:8px 4px 0">Оценки вводи в процентах (0–100), как в LMS. Если в строке несколько оценок (например, все practice-задания), впиши их через пробел — посчитаю среднее.</div>`;
     sy.atts.forEach((a) => {
       h += `<h2>${esc(a.name)}</h2><div class="card">`;
       const row = (c) => `<div class="grin"><div class="grow"><div style="font-size:15px">${esc(c.l)}</div><div class="sub" style="font-size:12px">вес в аттестации: ${fmt(c.max)} б.</div></div>${inp(c.k, c.outof, sc[c.k])}</div>`;
@@ -544,10 +544,19 @@ function renderGrades() {
 function gOnInput(inp) {
   if (!state.grades) state.grades = {};
   const sc = state.grades[gui.sub] = state.grades[gui.sub] || {};
-  const k = inp.dataset.gk, raw = inp.value.trim().replace(",", ".");
+  const k = inp.dataset.gk, raw = inp.value.trim();
   const max = Number(inp.dataset.max);
   if (raw === "") delete sc[k];
-  else { let v = Number(raw); if (!isFinite(v) || raw.endsWith(".")) return; v = Math.min(Math.max(v, 0), max); sc[k] = v; if (v !== Number(raw)) inp.value = v; }
+  else {
+    // several marks separated by spaces or ";" (e.g. "100 87,5 90") are averaged
+    const parts = raw.split(/[\s;]+/).filter(Boolean);
+    if (/[.,]$/.test(raw) || !parts.length) return;
+    const nums = parts.map(p => Number(p.replace(",", ".")));
+    if (nums.some(n => !isFinite(n))) return;
+    let v = nums.reduce((a, b) => a + b, 0) / nums.length;
+    v = Math.min(Math.max(v, 0), max); sc[k] = Math.round(v * 1000) / 1000;
+    if (nums.length === 1 && v !== nums[0]) inp.value = v;
+  }
   $("gr-out").innerHTML = gResultHtml(gActive(gui.sub, sc), sc);
   clearTimeout(gSaveTimer);
   const code = gui.sub, snap = Object.assign({}, sc);
