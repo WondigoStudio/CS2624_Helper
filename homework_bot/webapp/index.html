@@ -407,6 +407,7 @@ const GR = /*SYLLABI_JSON*/null;
 const TARGETS = [["A", 95], ["A-", 90], ["B+", 85], ["B", 80], ["B-", 75], ["C+", 70], ["C", 65], ["C-", 60], ["D+", 55], ["D", 50]];
 const gui = { sub: null, target: 90 };
 let gSaveTimer = null;
+function fmt2(x) { const r = Math.round(x * 100) / 100; return String(r).replace(".", ","); }
 function fmt(x) { const r = Math.round(x * 10) / 10; return String(r).replace(".", ","); }
 function gcomps(sy) {
   const out = [];
@@ -473,13 +474,23 @@ function gtargetText(sy, r, T) {
   }
   return h;
 }
+function gLmsSy(sy) {
+  return Object.assign({}, sy, { atts: sy.atts.map((a, i) => ({ name: a.name, reg: [],
+    exam: [{ k: "att" + (i + 1), l: a.name, max: 100, outof: 100 }] })) });
+}
+function gMode(code, sc) {
+  if (!gui.mode) gui.mode = {};
+  if (!gui.mode[code]) gui.mode[code] = (sc.att1 !== undefined || sc.att2 !== undefined) ? "lms" : "detail";
+  return gui.mode[code];
+}
+function gActive(code, sc) { const sy = GR.syllabi[code]; return gMode(code, sc) === "lms" ? gLmsSy(sy) : sy; }
 function gResultHtml(sy, sc) {
   const r = gcalc(sy, sc);
   const letter = gletter(r.cur, sy);
-  let h = `<div class="gr-head"><div><div class="sub">Сейчас набрано</div><div class="gr-big">${fmt(r.cur)}<span class="sub" style="font-size:18px"> / 100</span></div></div>
+  let h = `<div class="gr-head"><div><div class="sub">Сейчас набрано</div><div class="gr-big">${fmt2(r.cur)}<span class="sub" style="font-size:18px"> / 100</span></div></div>
     <div class="gr-letter">${r.all ? "Итог: " + letter : r.pace === null ? "" : "прогноз: " + gletter(r.pace * 100, sy)}</div></div>
     <div class="gr-grid">
-      <div class="box"><span class="sub">Максимум теперь</span><b>${fmt(r.best)}</b></div>
+      <div class="box"><span class="sub">Максимум теперь</span><b>${fmt2(r.best)}</b></div>
       <div class="box"><span class="sub">Потеряно</span><b>${fmt(100 - r.best)}</b></div>
       <div class="box"><span class="sub">Осталось оценить</span><b>${fmt(r.remCp)}</b></div>
       <div class="box"><span class="sub">Прогноз (в том же темпе)</span><b>${r.pace === null ? "—" : fmt(r.pace * 100) + " · " + gletter(r.pace * 100, sy)}</b></div>
@@ -507,28 +518,37 @@ function renderGrades() {
   h += `<details class="card" style="margin-top:12px"><summary>📋 ${esc(sy.title)}${sy.credits ? " · " + sy.credits + " кр." : ""} — кратко о курсе</summary>
     <div class="sub" style="margin-top:8px">${sy.final ? `Итог = ${sy.weights[0] * 100}% 1-я аттестация + ${sy.weights[1] * 100}% 2-я + ${sy.weights[2] * 100}% финал` : `Итог = ${sy.weights[0] * 100}% Midterm + ${sy.weights[1] * 100}% Endterm`}</div>
     ${sy.note ? `<div class="note">${esc(sy.note)}</div>` : ""}<ul>${sy.facts.map(f => `<li>${esc(f)}</li>`).join("")}</ul></details>`;
-  sy.atts.forEach((a) => {
-    h += `<h2>${esc(a.name)}</h2><div class="card">`;
-    const row = (c) => `<div class="grin"><div class="grow"><div style="font-size:15px">${esc(c.l)}</div><div class="sub" style="font-size:12px">вес в аттестации: ${fmt(c.max)} б.</div></div>
-      <input type="text" inputmode="decimal" autocomplete="off" data-max="${c.outof}" placeholder="—" data-gk="${esc(c.k)}" value="${isNum(sc[c.k]) ? sc[c.k] : ""}"><span class="of">/ ${fmt(c.outof)}</span></div>`;
-    if (a.reg.length) h += `<div class="sub" style="font-weight:600;margin-bottom:2px">РегМид — работы до экзамена</div>` + a.reg.map(row).join("");
-    h += `<div class="sub" style="font-weight:600;margin:${a.reg.length ? "10px" : "0"} 0 2px">Мид / Энд — экзамен</div>` + a.exam.map(row).join("") + `</div>`;
-  });
-  if (sy.final) h += `<h2>Финал</h2><div class="card"><div class="grin"><div class="grow"><div style="font-size:15px">${esc(sy.final.l)}</div><div class="sub" style="font-size:12px">вес в курсе: ${sy.weights[2] * 100}%</div></div>
-      <input type="text" inputmode="decimal" autocomplete="off" data-max="${sy.final.outof}" placeholder="—" data-gk="final" value="${isNum(sc.final) ? sc.final : ""}"><span class="of">/ ${sy.final.outof}</span></div></div>`;
-  h += `<h2>Итог</h2><div class="card" id="gr-out">${gResultHtml(sy, sc)}</div>
-    <div class="note" style="margin:6px 4px">Оставляй поле пустым, пока работа не оценена. Баллы сохраняются на сервере. Расчёт — по силлабусам 2026–2027, официальные оценки смотри в LMS.</div>`;
+  const mode = gMode(gui.sub, sc);
+  h += `<div class="filters" style="margin-top:10px"><button class="${mode === "detail" ? "on" : ""}" data-act="gmode" data-v="detail">По каждой работе</button>
+    <button class="${mode === "lms" ? "on" : ""}" data-act="gmode" data-v="lms">Итоги из LMS (Register)</button></div>`;
+  const inp = (k, max, val) => `<input type="text" inputmode="decimal" autocomplete="off" data-max="${max}" placeholder="—" data-gk="${esc(k)}" value="${isNum(val) ? val : ""}"><span class="of">/ ${max}</span>`;
+  if (mode === "lms") {
+    h += `<h2>Из журнала LMS</h2><div class="card"><div class="note" style="margin:0 0 6px">Впиши числа 0–100 как в LMS: Register Midterm, Register Endterm и финал. Пока не оценено — оставь пустым.</div>`;
+    sy.atts.forEach((a, i) => { h += `<div class="grin"><div class="grow"><div style="font-size:15px">${i === 0 ? "Register Midterm" : "Register Endterm"}</div><div class="sub" style="font-size:12px">${esc(a.name)} · вес в курсе ${sy.weights[i] * 100}%</div></div>${inp("att" + (i + 1), 100, sc["att" + (i + 1)])}</div>`; });
+    if (sy.final) h += `<div class="grin"><div class="grow"><div style="font-size:15px">Финал</div><div class="sub" style="font-size:12px">${esc(sy.final.l)} · вес в курсе ${sy.weights[2] * 100}%</div></div>${inp("final", sy.final.outof, sc.final)}</div>`;
+    h += `</div>`;
+  } else {
+    h += `<div class="note" style="margin:8px 4px 0">Оценки вводи в процентах (0–100) — так, как их показывает LMS у каждой работы.</div>`;
+    sy.atts.forEach((a) => {
+      h += `<h2>${esc(a.name)}</h2><div class="card">`;
+      const row = (c) => `<div class="grin"><div class="grow"><div style="font-size:15px">${esc(c.l)}</div><div class="sub" style="font-size:12px">вес в аттестации: ${fmt(c.max)} б.</div></div>${inp(c.k, c.outof, sc[c.k])}</div>`;
+      if (a.reg.length) h += `<div class="sub" style="font-weight:600;margin-bottom:2px">РегМид — работы до экзамена</div>` + a.reg.map(row).join("");
+      h += `<div class="sub" style="font-weight:600;margin:${a.reg.length ? "10px" : "0"} 0 2px">Мид / Энд — экзамен</div>` + a.exam.map(row).join("") + `</div>`;
+    });
+    if (sy.final) h += `<h2>Финал</h2><div class="card"><div class="grin"><div class="grow"><div style="font-size:15px">${esc(sy.final.l)}</div><div class="sub" style="font-size:12px">вес в курсе: ${sy.weights[2] * 100}%</div></div>${inp("final", sy.final.outof, sc.final)}</div></div>`;
+  }
+  h += `<h2>Итог</h2><div class="card" id="gr-out">${gResultHtml(gActive(gui.sub, sc), sc)}</div>
+    <div class="note" style="margin:6px 4px">Оставляй поле пустым, пока работа не оценена. Баллы сохраняются на сервере. Режим «Итоги из LMS» берёт готовые Register Midterm / Endterm, «По каждой работе» считает сам. Расчёт — по силлабусам 2026–2027, официальные оценки смотри в LMS.</div>`;
   el.innerHTML = h;
 }
 function gOnInput(inp) {
-  const sy = GR.syllabi[gui.sub];
   if (!state.grades) state.grades = {};
   const sc = state.grades[gui.sub] = state.grades[gui.sub] || {};
   const k = inp.dataset.gk, raw = inp.value.trim().replace(",", ".");
   const max = Number(inp.dataset.max);
   if (raw === "") delete sc[k];
   else { let v = Number(raw); if (!isFinite(v) || raw.endsWith(".")) return; v = Math.min(Math.max(v, 0), max); sc[k] = v; if (v !== Number(raw)) inp.value = v; }
-  $("gr-out").innerHTML = gResultHtml(sy, sc);
+  $("gr-out").innerHTML = gResultHtml(gActive(gui.sub, sc), sc);
   clearTimeout(gSaveTimer);
   const code = gui.sub, snap = Object.assign({}, sc);
   gSaveTimer = setTimeout(async () => {
@@ -542,7 +562,7 @@ document.addEventListener("input", (ev) => {
 document.addEventListener("change", (ev) => {
   if (ev.target.id === "gr-target" && state && GR) {
     gui.target = Number(ev.target.value);
-    const sy = GR.syllabi[gui.sub], sc = (state.grades && state.grades[gui.sub]) || {};
+    const sc = (state.grades && state.grades[gui.sub]) || {}, sy = gActive(gui.sub, sc);
     $("gr-need").innerHTML = gtargetText(sy, gcalc(sy, sc), gui.target);
   }
 });
@@ -709,6 +729,7 @@ document.addEventListener("click", async (ev) => {
     case "delbday": confirmDo("Удалить этот день рождения у всех?", () => act("/api/bday/delete", { id }, "Удалено")); break;
     case "calnav": { const d = new Date(ui.calY, ui.calM + Number(el.dataset.d), 1); ui.calY = d.getFullYear(); ui.calM = d.getMonth(); ui.calDay = null; render(); break; }
     case "calday": ui.calDay = el.dataset.iso; render(); break;
+    case "gmode": if (!gui.mode) gui.mode = {}; gui.mode[gui.sub] = el.dataset.v; dirty.add("grades"); renderView("grades"); break;
     case "gsub": gui.sub = el.dataset.v; dirty.add("grades"); renderView("grades"); break;
     case "closesheet": closeSheet(); break;
   }
