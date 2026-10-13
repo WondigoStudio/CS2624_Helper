@@ -1,8 +1,7 @@
 """Anonymous messages: to a person from the bot's database or to a group.
 
-Honest design: the recipient never sees who wrote, but the sender is told up
-front that admins can see the author (moderation), and every message is also
-written to the console log. Safeguards: rate limit, confirmation before
+Honest design: the recipient never sees who wrote; the author is revealed to
+admins only when a message is reported (this is what the user is told). Safeguards: rate limit, confirmation before
 sending, report / block buttons for the recipient, opt-out, 30-day retention.
 """
 
@@ -31,8 +30,8 @@ STATE_TTL = 600  # seconds the half-finished draft is remembered
 
 DISCLOSURE = (
     "🕶 <b>Анонимные сообщения</b>\n\n"
-    "Получатель не увидит, кто написал. Но для защиты от травли и спама "
-    "<b>администраторы бота могут видеть автора</b> и текст сообщений. "
+    "Получатель не увидит, кто написал. Автор раскрывается администраторам "
+    "<b>только если на сообщение подали жалобу</b> (травля, угрозы, спам). "
     "Не пиши угроз и оскорблений.\n\n"
     f"Лимит: {PER_HOUR} сообщений в час, до {MAX_LEN} символов, только текст."
 )
@@ -88,9 +87,9 @@ async def anon_log_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args and context.args[0].isdigit():
         limit = min(int(context.args[0]), 200)
     names = {r["chat_id"]: display_name(r) for r in list_known_users()}
-    rows = anon_recent(limit)
+    rows = [r for r in anon_recent(500) if r["status"] == "reported"][:limit]
     if not rows:
-        await update.message.reply_text("Анонимных сообщений пока не было.")
+        await update.message.reply_text("Жалоб на анонимные сообщения пока нет.")
         return
     lines = []
     for r in rows:
@@ -203,18 +202,13 @@ async def _deliver(query, context, st):
     kind, target, text = st["kind"], st["target"], st["text"]
     msg_id = anon_create(uid, target, kind, text)
     context.user_data.pop("anon", None)
-    names = {r["chat_id"]: display_name(r) for r in list_known_users()}
-    logger.warning(
-        "[ANON] #%s %s(%s) -> %s(%s) [%s]: %r",
-        msg_id, names.get(uid, "?"), uid, names.get(target, "?"), target, kind, text,
-    )
     if kind == "user" and anon_is_blocked(target, uid):
         anon_set_status(msg_id, "blocked")
         await query.edit_message_text("✅ Отправлено анонимно.")  # the sender is not told about the block
         return
     body = f"🕶 <b>Анонимное сообщение</b>\n\n{html.escape(text)}"
     if kind == "user":
-        kb = _kb([("↩️ Ответить анонимно", f"anon:r:{msg_id}")], [("🚫 Заблокировать", f"anon:b:{msg_id}"), ("⚠️ Пожаловаться", f"anon:rep:{msg_id}")])
+        kb = _kb([("↩️ Ответить анонимно", f"anon:r:{msg_id}")], [("⚠️ Пожаловаться", f"anon:rep:{msg_id}")])
     else:
         kb = _kb([("⚠️ Пожаловаться", f"anon:rep:{msg_id}")])
     try:
@@ -256,7 +250,7 @@ async def anon_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         _set(context, step="confirm", kind=st["kind"], target=st["target"], text=text)
         await update.message.reply_text(
-            f"Предпросмотр:\n\n<i>{html.escape(text)}</i>\n\nОтправить анонимно? (админы бота видят автора)",
+            f"Предпросмотр:\n\n<i>{html.escape(text)}</i>\n\nОтправить анонимно?",
             parse_mode=ParseMode.HTML,
             reply_markup=_kb([("✅ Отправить", "anon:send"), ("✖ Отмена", "anon:cancel")]),
         )
