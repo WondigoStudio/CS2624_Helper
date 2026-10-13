@@ -15,7 +15,7 @@ from telegram import Update
 from telegram.ext import ContextTypes, TypeHandler
 
 from .config import logger
-from .db import insert_activity, prune_activity
+from .db import anon_prune, insert_activity, prune_activity
 from .utils import now_kz
 
 RETENTION_DAYS = 30
@@ -46,7 +46,8 @@ CALLBACK_LABELS = {
     "remconfirm": "подтвердил напоминание", "remsnooze": "отложил напоминание",
     "remdel": "удаляет напоминание", "remwd": "создаёт напоминание", "remwhen": "создаёт напоминание",
     "bdaydel": "удаляет день рождения", "bdayfilter": "дни рождения", "bdaytarget": "дни рождения",
-    "phtgt": "фото кабинета", "syl": "смотрит силлабус", "testph": "тест фото", "ytdl": "скачивает видео",
+    "phtgt": "фото кабинета", "syl": "смотрит силлабус",
+    "anon": "анонимные сообщения", "testph": "тест фото", "ytdl": "скачивает видео",
 }
 
 
@@ -128,6 +129,7 @@ def _flush_blocking():
         _last_prune = now
         try:
             prune_activity((now - timedelta(days=RETENTION_DAYS)).isoformat(timespec="seconds"))
+            anon_prune((now - timedelta(days=RETENTION_DAYS)).isoformat(timespec="seconds"))
         except Exception as e:
             logger.warning("Could not prune the activity log: %s", e)
 
