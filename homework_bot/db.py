@@ -541,6 +541,22 @@ def init_db(target_url: str = None):
         """
     )
     conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS anon_messages (
+            id {id_pk},
+            ts TEXT NOT NULL,
+            sender_id BIGINT NOT NULL,
+            target_id BIGINT NOT NULL,
+            target_kind TEXT NOT NULL,
+            text TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'sent'
+        )
+        """
+    )
+    conn.execute("CREATE TABLE IF NOT EXISTS anon_blocks (target_id BIGINT NOT NULL, sender_id BIGINT NOT NULL, PRIMARY KEY (target_id, sender_id))")
+    conn.execute("CREATE TABLE IF NOT EXISTS anon_optout (user_id BIGINT PRIMARY KEY)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_anon_sender ON anon_messages (sender_id, ts)")
+    conn.execute(
         """
         CREATE TABLE IF NOT EXISTS grades (
             user_id BIGINT NOT NULL,
@@ -1266,7 +1282,7 @@ def delete_birthday(birthday_id: int):
 _MIRROR_TABLES = [
     "tasks", "task_attachments", "task_done", "lms_synced", "lms_feeds", "chats", "schedule", "room_photos", "actions",
     "schedule_allowed_users", "user_perms", "report_settings", "group_members", "report_chats",
-    "reminders", "birthdays", "chat_threads", "grades",
+    "reminders", "birthdays", "chat_threads", "grades", "anon_messages", "anon_blocks", "anon_optout",
 ]
 
 
@@ -1409,5 +1425,89 @@ def save_grades(user_id: int, subject: str, scores: dict):
             "ON CONFLICT(user_id, subject) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
             (user_id, subject, json.dumps(scores, ensure_ascii=False), now_kz().isoformat()),
         )
+    conn.commit()
+    conn.close()
+
+
+# --- Anonymous messages -----------------------------------------------------
+def anon_create(sender_id: int, target_id: int, kind: str, text: str) -> int:
+    conn = db()
+    row = conn.execute(
+        "INSERT INTO anon_messages (ts, sender_id, target_id, target_kind, text) VALUES (?, ?, ?, ?, ?) RETURNING id",
+        (now_kz().isoformat(), sender_id, target_id, kind, text),
+    ).fetchone()
+    conn.commit()
+    conn.close()
+    return row["id"]
+
+
+def anon_get(msg_id: int):
+    conn = db()
+    row = conn.execute("SELECT * FROM anon_messages WHERE id = ?", (msg_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def anon_set_status(msg_id: int, status: str):
+    conn = db()
+    conn.execute("UPDATE anon_messages SET status = ? WHERE id = ?", (status, msg_id))
+    conn.commit()
+    conn.close()
+
+
+def anon_count_since(sender_id: int, since_iso: str) -> int:
+    conn = db()
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM anon_messages WHERE sender_id = ? AND ts >= ?", (sender_id, since_iso)
+    ).fetchone()
+    conn.close()
+    return row["c"]
+
+
+def anon_block(target_id: int, sender_id: int):
+    conn = db()
+    conn.execute(
+        "INSERT INTO anon_blocks (target_id, sender_id) VALUES (?, ?) ON CONFLICT DO NOTHING", (target_id, sender_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def anon_is_blocked(target_id: int, sender_id: int) -> bool:
+    conn = db()
+    row = conn.execute(
+        "SELECT 1 FROM anon_blocks WHERE target_id = ? AND sender_id = ?", (target_id, sender_id)
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def anon_set_optout(user_id: int, off: bool):
+    conn = db()
+    if off:
+        conn.execute("INSERT INTO anon_optout (user_id) VALUES (?) ON CONFLICT DO NOTHING", (user_id,))
+    else:
+        conn.execute("DELETE FROM anon_optout WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def anon_is_optout(user_id: int) -> bool:
+    conn = db()
+    row = conn.execute("SELECT 1 FROM anon_optout WHERE user_id = ?", (user_id,)).fetchone()
+    conn.close()
+    return row is not None
+
+
+def anon_recent(limit: int = 30):
+    conn = db()
+    rows = conn.execute("SELECT * FROM anon_messages ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return rows
+
+
+def anon_prune(before_iso: str):
+    conn = db()
+    conn.execute("DELETE FROM anon_messages WHERE ts < ?", (before_iso,))
     conn.commit()
     conn.close()
