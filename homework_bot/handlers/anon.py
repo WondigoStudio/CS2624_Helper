@@ -1,29 +1,29 @@
 """Anonymous messages: to a person from the bot's database or to a group.
-
-Honest design: the recipient never sees who wrote; the author is revealed to
-admins only when a message is reported (this is what the user is told). Safeguards: rate limit, confirmation before
+ 
+Honest design: the recipient never sees who wrote; the sender is told up front
+that admins can see the author, and every message is written to the console. Safeguards: rate limit, confirmation before
 sending, report / block buttons for the recipient, opt-out, 30-day retention.
 """
-
+ 
 import html
 import logging
 import time
 from datetime import timedelta
-
+ 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
-
+ 
 from ..config import ADMIN_IDS
 from ..db import (
     anon_block, anon_count_since, anon_create, anon_get, anon_is_blocked, anon_is_optout,
-    anon_recent, anon_set_optout, anon_set_status, display_name, list_known_users, register_chat,
+    anon_recent, anon_set_optout, anon_set_status, display_name, get_chat_thread, list_known_users, register_chat,
 )
 from ..permissions import is_admin
 from ..utils import _chunk_text, now_kz
-
+ 
 logger = logging.getLogger("anon")
-
+ 
 MAX_LEN = 500
 PER_HOUR = 5
 STATE_TTL = 600  # seconds the half-finished draft is remembered
@@ -217,7 +217,12 @@ async def _deliver(query, context, st):
     else:
         kb = _kb([("⚠️ Пожаловаться", f"anon:rep:{msg_id}")])
     try:
-        await context.bot.send_message(target, body, parse_mode=ParseMode.HTML, reply_markup=kb)
+        extra = {}
+        if kind == "group":
+            thread = get_chat_thread(target)  # the topic chosen with /sethere, if any
+            if thread:
+                extra["message_thread_id"] = thread
+        await context.bot.send_message(target, body, parse_mode=ParseMode.HTML, reply_markup=kb, **extra)
     except Exception as exc:
         anon_set_status(msg_id, "failed")
         logger.warning("[ANON] #%s delivery failed: %s", msg_id, exc)
