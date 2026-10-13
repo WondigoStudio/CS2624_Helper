@@ -39,21 +39,21 @@ DISCLOSURE = (
 
 def _kb(*rows):
     return InlineKeyboardMarkup([[InlineKeyboardButton(t, callback_data=d) for t, d in r] for r in rows])
-
-
+ 
+ 
 def _state(context):
     st = context.user_data.get("anon")
     if st and time.time() - st.get("ts", 0) > STATE_TTL:
         context.user_data.pop("anon", None)
         return None
     return st
-
-
+ 
+ 
 def _set(context, **kw):
     kw["ts"] = time.time()
     context.user_data["anon"] = kw
-
-
+ 
+ 
 async def anon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     if update.effective_chat.type != "private":
@@ -64,20 +64,20 @@ async def anon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         DISCLOSURE, parse_mode=ParseMode.HTML,
         reply_markup=_kb([("👤 Человеку", "anon:u"), ("👥 В группу", "anon:g")], [("✖ Отмена", "anon:cancel")]),
     )
-
-
+ 
+ 
 async def anon_off_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     anon_set_optout(update.effective_user.id, True)
     await update.message.reply_text("Готово: анонимные сообщения тебе больше не придут. Вернуть: /anon_on")
-
-
+ 
+ 
 async def anon_on_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     anon_set_optout(update.effective_user.id, False)
     await update.message.reply_text("Хорошо, анонимные сообщения снова можно присылать тебе.")
-
-
+ 
+ 
 async def anon_log_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_chat(update)
     if not is_admin(update.effective_user.id):
@@ -103,15 +103,15 @@ async def anon_log_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     for chunk in _chunk_text("\n\n".join(lines)):
         await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
-
-
+ 
+ 
 async def anon_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data.split(":")
     action = data[1]
     uid = update.effective_user.id
     bot = context.bot
-
+ 
     # --- recipient side: reply / block / report ---------------------------
     if action in ("r", "b", "rep"):
         msg = anon_get(int(data[2]))
@@ -144,7 +144,7 @@ async def anon_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer()
             await bot.send_message(uid, f"Напиши ответ (до {MAX_LEN} символов). Он уйдёт анонимно 🕶\n/anon — отмена не нужна, просто не пиши.")
         return
-
+ 
     # --- sender side -------------------------------------------------------
     if query.message.chat.type != "private":
         await query.answer()
@@ -190,8 +190,8 @@ async def anon_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _deliver(query, context, st)
     else:
         await query.answer()
-
-
+ 
+ 
 async def _deliver(query, context, st):
     uid = query.from_user.id
     since = (now_kz() - timedelta(hours=1)).isoformat()
@@ -202,6 +202,11 @@ async def _deliver(query, context, st):
     kind, target, text = st["kind"], st["target"], st["text"]
     msg_id = anon_create(uid, target, kind, text)
     context.user_data.pop("anon", None)
+    names = {r["chat_id"]: display_name(r) for r in list_known_users()}
+    logger.warning(
+        "[ANON] #%s %s(%s) -> %s(%s) [%s]: %r",
+        msg_id, names.get(uid, "?"), uid, names.get(target, "?"), target, kind, text,
+    )
     if kind == "user" and anon_is_blocked(target, uid):
         anon_set_status(msg_id, "blocked")
         await query.edit_message_text("✅ Отправлено анонимно.")  # the sender is not told about the block
@@ -219,8 +224,8 @@ async def _deliver(query, context, st):
         await query.edit_message_text("Не получилось доставить: человек не запускал бота или заблокировал его.")
         return
     await query.edit_message_text("✅ Отправлено анонимно.")
-
-
+ 
+ 
 async def anon_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Free text in a private chat: only reacts while an /anon draft is open."""
     if update.effective_chat.type != "private":
@@ -250,7 +255,7 @@ async def anon_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         _set(context, step="confirm", kind=st["kind"], target=st["target"], text=text)
         await update.message.reply_text(
-            f"Предпросмотр:\n\n<i>{html.escape(text)}</i>\n\nОтправить анонимно?",
+            f"Предпросмотр:\n\n<i>{html.escape(text)}</i>\n\nОтправить анонимно? (админы бота видят автора)",
             parse_mode=ParseMode.HTML,
             reply_markup=_kb([("✅ Отправить", "anon:send"), ("✖ Отмена", "anon:cancel")]),
         )
