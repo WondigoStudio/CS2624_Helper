@@ -570,6 +570,10 @@ def init_db(target_url: str = None):
     if "morning_off" not in _existing_columns(conn, "group_settings"):
         conn.execute("ALTER TABLE group_settings ADD COLUMN morning_off INTEGER NOT NULL DEFAULT 0")
     conn.execute(
+        "CREATE TABLE IF NOT EXISTS group_flags (chat_id BIGINT NOT NULL, flag TEXT NOT NULL, "
+        "value INTEGER NOT NULL, PRIMARY KEY (chat_id, flag))"
+    )
+    conn.execute(
         """
         CREATE TABLE IF NOT EXISTS group_roles (
             chat_id BIGINT NOT NULL,
@@ -1307,7 +1311,7 @@ def delete_birthday(birthday_id: int):
 _MIRROR_TABLES = [
     "tasks", "task_attachments", "task_done", "lms_synced", "lms_feeds", "chats", "schedule", "room_photos", "actions",
     "schedule_allowed_users", "user_perms", "report_settings", "group_members", "report_chats",
-    "reminders", "birthdays", "chat_threads", "grades", "anon_messages", "anon_blocks", "anon_optout", "group_settings", "group_roles",
+    "reminders", "birthdays", "chat_threads", "grades", "anon_messages", "anon_blocks", "anon_optout", "group_settings", "group_roles", "group_flags",
 ]
 
 
@@ -1606,25 +1610,52 @@ def find_user_by_username(username: str):
     return row
 
 
-def groups_morning_off() -> set:
-    """Groups where the morning messages (timetable, weather, task reminder) are switched off."""
+# --- Per-group switches (what the bot may send to a group) -------------------
+def _flag_table():
     def load():
         conn = db()
-        rows = conn.execute("SELECT chat_id FROM group_settings WHERE morning_off = 1").fetchall()
+        rows = conn.execute("SELECT chat_id, flag, value FROM group_flags").fetchall()
         conn.close()
-        return {r["chat_id"] for r in rows}
-    return cached_read("morning_off", ("group_settings",), load)
+        return {(r["chat_id"], r["flag"]): int(r["value"]) for r in rows}
+    return cached_read("group_flags", ("group_flags",), load)
 
 
-def set_morning_off(chat_id: int, off: bool, by: int):
+def group_flag(chat_id: int, flag: str, default: bool = True) -> bool:
+    v = _flag_table().get((chat_id, flag))
+    return default if v is None else bool(v)
+
+
+def chats_with_flag_off(flag: str, default: bool = True) -> set:
+    """Chats where `flag` is explicitly off (or, for default-off flags, not explicitly on)."""
+    if default:
+        return {c for (c, f), v in _flag_table().items() if f == flag and not v}
+    return set()
+
+
+def set_group_flag(chat_id: int, flag: str, value: bool):
     conn = db()
     conn.execute(
-        "INSERT INTO group_settings (chat_id, roles_enabled, enabled_by, updated_at, morning_off) "
-        "VALUES (?, 0, ?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET morning_off = excluded.morning_off, "
-        "updated_at = excluded.updated_at",
-        (chat_id, by, now_kz().isoformat(), 1 if off else 0),
+        "INSERT INTO group_flags (chat_id, flag, value) VALUES (?, ?, ?) "
+        "ON CONFLICT(chat_id, flag) DO UPDATE SET value = excluded.value",
+        (chat_id, flag, 1 if value else 0),
     )
-    if off:  # the morning poll is part of the same set
-        conn.execute("UPDATE report_chats SET enabled = 0 WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+    conn.close()
+
+
+def poll_enabled(chat_id: int) -> bool:
+    conn = db()
+    row = conn.execute("SELECT enabled FROM report_chats WHERE chat_id = ?", (chat_id,)).fetchone()
+    conn.close()
+    return bool(row and row["enabled"])
+
+
+def set_poll_enabled(chat_id: int, on: bool):
+    conn = db()
+    conn.execute(
+        "INSERT INTO report_chats (chat_id, enabled, created_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(chat_id) DO UPDATE SET enabled = excluded.enabled",
+        (chat_id, 1 if on else 0, now_kz().isoformat()),
+    )
     conn.commit()
     conn.close()
