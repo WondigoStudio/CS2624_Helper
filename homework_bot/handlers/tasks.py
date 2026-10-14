@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
 
 from ..ai_format import maybe_structure_description, strip_html_preview
@@ -44,7 +45,7 @@ from ..states import (
     TYPING_TITLE,
 )
 from ..formatting import format_task_line
-from ..utils import is_task_overdue, parse_due_date, parse_due_time, reply_text_chunked, today_kz
+from ..utils import _chunk_text, is_task_overdue, parse_due_date, parse_due_time, reply_text_chunked, today_kz
 
 
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -169,7 +170,10 @@ async def _finish_add_task(
         add_task_attachment(task_id, file_id, kind)
     d = datetime.strptime(due_date_iso, "%Y-%m-%d").date()
     time_part = f", {due_time}" if due_time else ""
-    desc_part = f"\n📝 {strip_html_preview(description)}" if description else ""
+    desc_plain = strip_html_preview(description) if description else ""
+    if len(desc_plain) > 300:  # a long description must not push the confirmation over Telegram's 4096 limit
+        desc_plain = desc_plain[:300].rstrip() + "… (полный текст — по кнопке 📝)"
+    desc_part = f"\n📝 {desc_plain}" if description else ""
     attach_part = f"\n📎 вложений: {len(attachments)}" if attachments else ""
     return f"Готово ✅\n[{SUBJECT_NAME[subject]}] {title} — {d.strftime('%d.%m.%Y')}{time_part}{desc_part}{attach_part}"
 async def add_time_typed(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,8 +226,11 @@ async def add_attachment_done(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     attachments = context.user_data.pop("new_attachments", [])
+    if "new_subject" not in context.user_data:  # double tap on «Готово»: the task is already saved
+        await query.edit_message_text("Задание уже добавлено ✅")
+        return ConversationHandler.END
     text = await _finish_add_task(context, SHARED_TASKS_ID, attachments)
-    await query.edit_message_text(text)
+    await query.edit_message_text(text[:4000])
     return ConversationHandler.END
 
 
@@ -609,12 +616,18 @@ async def taskdesc_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not task or not task["description"]:
         await query.message.reply_text("Описания нет.")
         return
+    head = f"📝 [{SUBJECT_NAME[task['subject']]}] {task['title']}:\n\n"
     if task["description_html"]:
         header = f"📝 [{html.escape(SUBJECT_NAME[task['subject']])}] {html.escape(task['title'])}:\n\n"
-        await query.message.reply_text(
-            header + task["description"], parse_mode=ParseMode.HTML
-        )
+        try:
+            # chunks split on line breaks; if a chunk cuts a tag, Telegram rejects it
+            for chunk in _chunk_text(header + task["description"], 3900):
+                await query.message.reply_text(chunk, parse_mode=ParseMode.HTML)
+            return
+        except BadRequest:
+            pass
+        plain = head + html.unescape(strip_html_preview(task["description"]))
     else:
-        await query.message.reply_text(
-            f"📝 [{SUBJECT_NAME[task['subject']]}] {task['title']}:\n\n{task['description']}"
-        )
+        plain = head + task["description"]
+    for chunk in _chunk_text(plain, 3900):
+        await query.message.reply_text(chunk)
