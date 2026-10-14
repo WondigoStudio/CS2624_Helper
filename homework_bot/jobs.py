@@ -16,6 +16,7 @@ from .handlers.weather import morning_weather_text
 from .lms_sync import sync_all_feeds
 from .db import (
     all_chat_ids,
+    groups_morning_off,
     bump_reminder_nag,
     db,
     get_all_enabled_reminders,
@@ -174,10 +175,11 @@ def _chats_due_now(offset_minutes: int, default_time: str):
     now = now_kz()
     now_str = now.strftime("%H:%M")
     firsts = first_lesson_times(now.weekday())
+    muted = groups_morning_off()
     return [
         row["chat_id"]
         for row in list_known_users()
-        if _adaptive_target_time(firsts.get(row["chat_id"]), row["chat_id"], row["chat_type"],
+        if row["chat_id"] not in muted and _adaptive_target_time(firsts.get(row["chat_id"]), row["chat_id"], row["chat_type"],
                                  offset_minutes, default_time) == now_str
     ]
 
