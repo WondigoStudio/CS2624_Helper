@@ -16,7 +16,7 @@ from .handlers.weather import morning_weather_text
 from .lms_sync import sync_all_feeds
 from .db import (
     all_chat_ids,
-    groups_morning_off,
+    chats_with_flag_off,
     bump_reminder_nag,
     db,
     get_all_enabled_reminders,
@@ -169,13 +169,13 @@ def _adaptive_target_time(first_lesson, chat_id: int, chat_type, offset_minutes:
     return default_time
 
 
-def _chats_due_now(offset_minutes: int, default_time: str):
+def _chats_due_now(offset_minutes: int, default_time: str, flag: str = None):
     """Blocking (DB). Chats whose personal send time is this minute — a single
     pass over the data for all chats instead of a query per chat."""
     now = now_kz()
     now_str = now.strftime("%H:%M")
     firsts = first_lesson_times(now.weekday())
-    muted = groups_morning_off()
+    muted = chats_with_flag_off(flag) if flag else set()
     return [
         row["chat_id"]
         for row in list_known_users()
@@ -191,13 +191,16 @@ async def check_adaptive_schedule(context: ContextTypes.DEFAULT_TYPE):
     lesson today for a private chat with a schedule."""
     weekday = now_kz().weekday()
     due = await asyncio.to_thread(_chats_due_now, SCHEDULE_OFFSET_MINUTES, DEFAULT_SCHEDULE_TIME)
+    no_schedule = await asyncio.to_thread(chats_with_flag_off, "schedule")
     for chat_id in due:
         try:
-            await send_morning_schedule_for_chat(context.bot, chat_id, weekday)
+            if chat_id not in no_schedule:
+                await send_morning_schedule_for_chat(context.bot, chat_id, weekday)
         except Exception as e:
             logger.warning("Could not send morning schedule to chat %s: %s", chat_id, e)
         try:
-            weather = await morning_weather_text() if weekday != 6 else None  # в воскресенье без погоды
+            no_weather = chat_id in await asyncio.to_thread(chats_with_flag_off, "weather")
+            weather = await morning_weather_text() if weekday != 6 and not no_weather else None  # в воскресенье без погоды
             if weather:
                 await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=weather, parse_mode=ParseMode.HTML)
         except Exception as e:
@@ -227,7 +230,7 @@ async def check_adaptive_tasks(context: ContextTypes.DEFAULT_TYPE):
     once, at the moment that matches its target send time — fixed 08:00 for
     groups, or TASKS_OFFSET_MINUTES before that person's first lesson today
     for a private chat with a schedule."""
-    due = await asyncio.to_thread(_chats_due_now, TASKS_OFFSET_MINUTES, DEFAULT_TASKS_TIME)
+    due = await asyncio.to_thread(_chats_due_now, TASKS_OFFSET_MINUTES, DEFAULT_TASKS_TIME, "tasks")
     if not due:
         return
     today_iso = today_kz().isoformat()
@@ -443,7 +446,10 @@ async def check_task_deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
             f"{due_dt.strftime('%d.%m.%Y %H:%M')}"
         )
         finished = await asyncio.to_thread(users_who_finished, row["id"])
+        muted = await asyncio.to_thread(chats_with_flag_off, "deadlines")
         for chat_id in await asyncio.to_thread(all_chat_ids):
+            if chat_id in muted:
+                continue
             if chat_id in finished:
                 continue  # this person already marked it done — no need to nag
             try:
@@ -463,8 +469,11 @@ async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
     target_time = (now + timedelta(minutes=LESSON_REMINDER_MINUTES)).strftime("%H:%M")
     rows = await asyncio.to_thread(lessons_starting_at, now.weekday(), target_time)
 
+    muted = await asyncio.to_thread(chats_with_flag_off, "lessons")
     for r in rows:
         chat_id = r["chat_id"]
+        if chat_id in muted:
+            continue
         text = (
             f"⏰ Через {LESSON_REMINDER_MINUTES} минут: "
             f"[{SUBJECT_NAME[r['subject']]}] в {r['time']}, каб. {r['room']}"
