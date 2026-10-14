@@ -562,10 +562,13 @@ def init_db(target_url: str = None):
             chat_id BIGINT PRIMARY KEY,
             roles_enabled INTEGER NOT NULL DEFAULT 0,
             enabled_by BIGINT,
-            updated_at TEXT
+            updated_at TEXT,
+            morning_off INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    if "morning_off" not in _existing_columns(conn, "group_settings"):
+        conn.execute("ALTER TABLE group_settings ADD COLUMN morning_off INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS group_roles (
@@ -1601,3 +1604,27 @@ def find_user_by_username(username: str):
     ).fetchone()
     conn.close()
     return row
+
+
+def groups_morning_off() -> set:
+    """Groups where the morning messages (timetable, weather, task reminder) are switched off."""
+    def load():
+        conn = db()
+        rows = conn.execute("SELECT chat_id FROM group_settings WHERE morning_off = 1").fetchall()
+        conn.close()
+        return {r["chat_id"] for r in rows}
+    return cached_read("morning_off", ("group_settings",), load)
+
+
+def set_morning_off(chat_id: int, off: bool, by: int):
+    conn = db()
+    conn.execute(
+        "INSERT INTO group_settings (chat_id, roles_enabled, enabled_by, updated_at, morning_off) "
+        "VALUES (?, 0, ?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET morning_off = excluded.morning_off, "
+        "updated_at = excluded.updated_at",
+        (chat_id, by, now_kz().isoformat(), 1 if off else 0),
+    )
+    if off:  # the morning poll is part of the same set
+        conn.execute("UPDATE report_chats SET enabled = 0 WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+    conn.close()
