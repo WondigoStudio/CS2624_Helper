@@ -165,7 +165,7 @@ async def private_task_description(update: Update, context: ContextTypes.DEFAULT
     sent = False
     try:
         chat_id, thread_id = _ephemeral_target(update)
-        if task["description_html"]:
+        if task["description_html"] and len(task["description"]) < 3500:
             text = f"📝 [{html.escape(SUBJECT_NAME[task['subject']])}] {html.escape(task['title'])}:\n\n{task['description']}"
             sent = await send_ephemeral(context.bot, chat_id, update.effective_user.id, text,
                                         callback_query_id=query.id, thread_id=thread_id,
@@ -174,6 +174,8 @@ async def private_task_description(update: Update, context: ContextTypes.DEFAULT
             plain = f"{head}:\n\n{task['description']}"
             if task["description_html"]:
                 plain = f"{head}:\n\n" + html.unescape(re.sub(r"<[^>]+>", "", task["description"]))
+            if len(plain) > 3900:
+                plain = plain[:3900].rstrip() + "…\n(описание длинное — целиком оно в кнопке 📝 у задания в личке с ботом)"
             sent = await send_ephemeral(context.bot, chat_id, update.effective_user.id, plain,
                                         callback_query_id=query.id, thread_id=thread_id)
     except Exception as e:
