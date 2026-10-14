@@ -207,7 +207,7 @@ async function api(path, extra) {
   return r.json();
 }
 
-const ERR = { forbidden: "Нет доступа к этому действию", bad_date: "Неверная дата", bad_time: "Неверное время",
+const ERR = { in_past: "Это время уже прошло", too_many: "Слишком много напоминаний (максимум 50)", bad_weekday: "Выбери день недели", forbidden: "Нет доступа к этому действию", bad_date: "Неверная дата", bad_time: "Неверное время",
   empty: "Заполни обязательное поле", too_long: "Слишком длинный текст", bad_subject: "Выбери предмет",
   not_found: "Уже удалено", no_files: "У задания нет вложений", send_failed: "Не удалось отправить файлы" };
 async function act(path, body, okMsg) {
@@ -383,8 +383,21 @@ function renderWeek() {
   $("v-week").innerHTML = h;
 }
 
+function remWhen(r) {
+  if (r.repeat === "daily") return "🔁 каждый день в " + r.time;
+  if (r.repeat === "weekly") return "🔁 каждую неделю, " + WEEKDAYS[r.weekday].toLowerCase() + ", " + r.time;
+  const [y, m, d] = r.date.split("-").map(Number);
+  return "📅 " + d + " " + MONTHS_GEN[m - 1] + (y !== new Date().getFullYear() ? " " + y : "") + ", " + r.time;
+}
+
 function renderMore() {
-  let h = `<h2>Дни рождения<button class="link" data-act="newbday">+ Добавить</button></h2>`;
+  let h = `<h2>Напоминания<button class="link" data-act="newrem">+ Добавить</button></h2>`;
+  h += (state.reminders || []).length ? state.reminders.map(r => `<div class="card"><div class="row">
+      <div class="emoji">⏰</div><div class="grow"><div class="title">${esc(r.text)}</div>
+      <div class="sub">${esc(remWhen(r))}${r.mine_chat ? "" : " · в группу"}</div></div>
+      <button class="chipbtn danger" data-act="delrem" data-id="${r.id}" aria-label="Удалить">🗑</button>
+    </div></div>`).join("") : `<div class="card empty">Напоминаний пока нет. Они приходят тебе в чат с ботом.</div>`;
+  h += `<h2>Дни рождения<button class="link" data-act="newbday">+ Добавить</button></h2>`;
   h += state.birthdays.length ? state.birthdays.map(b => `<div class="card"><div class="row">
       <div class="emoji">🎂</div><div class="grow"><div class="title">${esc(b.name)}</div>
       <div class="sub">${b.day} ${MONTHS_GEN[b.month - 1]}</div></div>${bdayPill(b)}
@@ -669,6 +682,31 @@ function lessonForm() {
   };
 }
 
+function remForm() {
+  const now = new Date(), pad = n => String(n).padStart(2, "0");
+  const today = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+  openSheet(`<h3>Новое напоминание</h3>
+    <label>О чём напомнить</label><input id="r-text" maxlength="300" placeholder="Например: сдать отчёт по ICT">
+    <label>Как часто</label><select id="r-repeat"><option value="once">Один раз</option><option value="daily">Каждый день</option><option value="weekly">Каждую неделю</option></select>
+    <div id="r-datebox"><label>Дата</label><input id="r-date" type="date" value="${today}" min="${today}"></div>
+    <div id="r-wdbox" style="display:none"><label>День недели</label><select id="r-wd">${WEEKDAYS.map((n, i) => `<option value="${i}" ${i === state.weekday ? "selected" : ""}>${n}</option>`).join("")}</select></div>
+    <label>Время</label><input id="r-time" type="time" value="${pad((now.getHours() + 1) % 24)}:00">
+    <div class="btns"><button class="btn" id="r-save">Добавить</button><button class="btn ghost" data-act="closesheet">Отмена</button></div>`);
+  $("r-repeat").onchange = () => {
+    const v = $("r-repeat").value;
+    $("r-datebox").style.display = v === "once" ? "" : "none";
+    $("r-wdbox").style.display = v === "weekly" ? "" : "none";
+  };
+  $("r-save").onclick = async () => {
+    const text = $("r-text").value.trim(), repeat = $("r-repeat").value;
+    if (!text) { toast("Напиши, о чём напомнить"); return; }
+    if (!$("r-time").value) { toast("Укажи время"); return; }
+    $("r-save").disabled = true;
+    const res = await act("/api/reminder/add", { text, repeat, time: $("r-time").value, date: $("r-date").value, weekday: Number($("r-wd").value) }, "Напоминание добавлено ⏰");
+    if (res) closeSheet(); else $("r-save").disabled = false;
+  };
+}
+
 function bdayForm() {
   const days = Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}">${i + 1}</option>`).join("");
   const months = MONTHS.map((n, i) => `<option value="${i + 1}">${n}</option>`).join("");
@@ -735,6 +773,8 @@ document.addEventListener("click", async (ev) => {
     case "newlesson": lessonForm(); break;
     case "dellesson": confirmDo("Удалить пару из расписания?", () => act("/api/lesson/delete", { lesson_id: id }, "Пара удалена")); break;
     case "newbday": bdayForm(); break;
+    case "newrem": remForm(); break;
+    case "delrem": confirmDo("Удалить это напоминание?", () => act("/api/reminder/delete", { id }, "Удалено")); break;
     case "delbday": confirmDo("Удалить этот день рождения у всех?", () => act("/api/bday/delete", { id }, "Удалено")); break;
     case "calnav": { const d = new Date(ui.calY, ui.calM + Number(el.dataset.d), 1); ui.calY = d.getFullYear(); ui.calM = d.getMonth(); ui.calDay = null; render(); break; }
     case "calday": ui.calDay = el.dataset.iso; render(); break;
