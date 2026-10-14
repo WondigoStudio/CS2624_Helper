@@ -37,6 +37,10 @@ from .db import (
     get_grades,
     save_grades,
     add_birthday,
+    add_reminder,
+    delete_reminder,
+    get_reminder,
+    get_reminders_for_user,
     add_lesson,
     add_task,
     delete_birthday,
@@ -175,6 +179,11 @@ def build_state(user: dict) -> dict:
         "birthdays": birthdays,
         "stats": {"done": len(finished), "todo": len(todo)},
         "grades": get_grades(uid),
+        "reminders": [
+            {"id": r["id"], "text": r["text"], "repeat": r["repeat"], "weekday": r["weekday"],
+             "date": r["remind_date"], "time": r["time"], "mine_chat": r["chat_id"] == uid}
+            for r in get_reminders_for_user(uid)
+        ],
     }
     if admin:
         status = get_db_status()
@@ -415,6 +424,46 @@ def act_bday_delete(user, body):
     return {"ok": True}
 
 
+def act_reminder_add(user, body):
+    """A reminder to yourself (it arrives in the private chat with the bot)."""
+    text = _clean_text(body.get("text"), 300, required=True)
+    repeat = body.get("repeat")
+    if repeat not in ("once", "daily", "weekly"):
+        raise ApiError(400, "bad_repeat")
+    t = parse_due_time(str(body.get("time") or ""))
+    if not t:
+        raise ApiError(400, "bad_time")
+    remind_date, weekday = None, None
+    if repeat == "once":
+        remind_date = _clean_date(body.get("date"))
+        if datetime.strptime(remind_date + " " + t, "%Y-%m-%d %H:%M") < now_kz().replace(tzinfo=None):
+            raise ApiError(400, "in_past")
+    elif repeat == "weekly":
+        try:
+            weekday = int(body.get("weekday"))
+        except (TypeError, ValueError):
+            raise ApiError(400, "bad_weekday")
+        if not 0 <= weekday <= 6:
+            raise ApiError(400, "bad_weekday")
+    if len(get_reminders_for_user(user["id"])) >= 50:
+        raise ApiError(400, "too_many")
+    add_reminder(user["id"], user["id"], text, repeat, t, remind_date=remind_date, weekday=weekday)
+    return {"ok": True}
+
+
+def act_reminder_delete(user, body):
+    try:
+        row = get_reminder(int(body.get("id", 0)))
+    except (TypeError, ValueError):
+        raise ApiError(400, "bad_request")
+    if not row:
+        raise ApiError(404, "not_found")
+    if not (is_admin(user["id"]) or row["user_id"] == user["id"]):
+        raise ApiError(403, "forbidden")
+    delete_reminder(row["id"])
+    return {"ok": True}
+
+
 def act_grades_save(user, body):
     """Saves one subject's scores from the calculator (blank fields are simply absent)."""
     subject = body.get("subject")
@@ -426,6 +475,8 @@ def act_grades_save(user, body):
 
 _ROUTES = {
     "/api/grades/save": act_grades_save,
+    "/api/reminder/add": act_reminder_add,
+    "/api/reminder/delete": act_reminder_delete,
     "/api/state": act_state,
     "/api/done": act_done,
     "/api/undone": act_undone,
