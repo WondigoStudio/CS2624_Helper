@@ -186,6 +186,7 @@ from .handlers.admin import (
     viewschedule_cmd,
 )
 from .handlers.syllabus import syllabus_callback, syllabus_cmd
+from .handlers.roles import roles_cmd, roles_off_cmd, roles_on_cmd, setrole_cmd, unrole_cmd
 from .handlers.anon import anon_callback, anon_cmd, anon_log_cmd, anon_off_cmd, anon_on_cmd, anon_text
 from .handlers.social import call_cmd, set_report_cmd, topactions_cmd, track_group_members, sethere_cmd
 from .handlers.transcribe import handle_transcribe
@@ -480,6 +481,11 @@ def main():
     app.add_handler(CommandHandler("lmsusers", lmsusers_cmd))
     app.add_handler(CommandHandler("exportdb", exportdb_cmd))
     app.add_handler(CommandHandler("activity", activity_cmd))
+    app.add_handler(CommandHandler("roles", roles_cmd))
+    app.add_handler(CommandHandler("roles_on", roles_on_cmd))
+    app.add_handler(CommandHandler("roles_off", roles_off_cmd))
+    app.add_handler(CommandHandler("setrole", setrole_cmd))
+    app.add_handler(CommandHandler("unrole", unrole_cmd))
     app.add_handler(CommandHandler("anon", anon_cmd))
     app.add_handler(CommandHandler("anon_off", anon_off_cmd))
     app.add_handler(CommandHandler("anon_on", anon_on_cmd))
