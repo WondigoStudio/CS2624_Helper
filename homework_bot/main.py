@@ -186,7 +186,7 @@ from .handlers.admin import (
     viewschedule_cmd,
 )
 from .handlers.syllabus import syllabus_callback, syllabus_cmd
-from .handlers.groupset import morning_off_cmd, morning_on_cmd
+from .handlers.groupset import morning_off_cmd, morning_on_cmd, settings_callback, settings_cmd
 from .handlers.roles import roles_cmd, roles_off_cmd, roles_on_cmd, setrole_cmd, unrole_cmd
 from .handlers.anon import anon_callback, anon_cmd, anon_log_cmd, anon_off_cmd, anon_on_cmd, anon_text
 from .handlers.social import call_cmd, set_report_cmd, topactions_cmd, track_group_members, sethere_cmd
@@ -482,6 +482,8 @@ def main():
     app.add_handler(CommandHandler("lmsusers", lmsusers_cmd))
     app.add_handler(CommandHandler("exportdb", exportdb_cmd))
     app.add_handler(CommandHandler("activity", activity_cmd))
+    app.add_handler(CommandHandler("settings", settings_cmd))
+    app.add_handler(CallbackQueryHandler(settings_callback, pattern="^gs:"))
     app.add_handler(CommandHandler("morning_off", morning_off_cmd))
     app.add_handler(CommandHandler("morning_on", morning_on_cmd))
     app.add_handler(CommandHandler("roles", roles_cmd))
