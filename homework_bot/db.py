@@ -558,6 +558,28 @@ def init_db(target_url: str = None):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_anon_sender ON anon_messages (sender_id, ts)")
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS group_settings (
+            chat_id BIGINT PRIMARY KEY,
+            roles_enabled INTEGER NOT NULL DEFAULT 0,
+            enabled_by BIGINT,
+            updated_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS group_roles (
+            chat_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            role TEXT NOT NULL,
+            assigned_by BIGINT,
+            ts TEXT,
+            PRIMARY KEY (chat_id, user_id)
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS grades (
             user_id BIGINT NOT NULL,
             subject TEXT NOT NULL,
@@ -1282,7 +1304,7 @@ def delete_birthday(birthday_id: int):
 _MIRROR_TABLES = [
     "tasks", "task_attachments", "task_done", "lms_synced", "lms_feeds", "chats", "schedule", "room_photos", "actions",
     "schedule_allowed_users", "user_perms", "report_settings", "group_members", "report_chats",
-    "reminders", "birthdays", "chat_threads", "grades", "anon_messages", "anon_blocks", "anon_optout",
+    "reminders", "birthdays", "chat_threads", "grades", "anon_messages", "anon_blocks", "anon_optout", "group_settings", "group_roles",
 ]
 
 
@@ -1511,3 +1533,71 @@ def anon_prune(before_iso: str):
     conn.execute("DELETE FROM anon_messages WHERE ts < ?", (before_iso,))
     conn.commit()
     conn.close()
+
+
+# --- Group roles ------------------------------------------------------------
+def roles_enabled(chat_id: int) -> bool:
+    def load():
+        conn = db()
+        row = conn.execute("SELECT roles_enabled FROM group_settings WHERE chat_id = ?", (chat_id,)).fetchone()
+        conn.close()
+        return bool(row and row["roles_enabled"])
+    return cached_read(f"roles_on:{chat_id}", ("group_settings",), load)
+
+
+def set_roles_enabled(chat_id: int, on: bool, by: int):
+    conn = db()
+    conn.execute(
+        "INSERT INTO group_settings (chat_id, roles_enabled, enabled_by, updated_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(chat_id) DO UPDATE SET roles_enabled = excluded.roles_enabled, "
+        "enabled_by = excluded.enabled_by, updated_at = excluded.updated_at",
+        (chat_id, 1 if on else 0, by, now_kz().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_group_role(chat_id: int, user_id: int):
+    def load():
+        conn = db()
+        row = conn.execute(
+            "SELECT role FROM group_roles WHERE chat_id = ? AND user_id = ?", (chat_id, user_id)
+        ).fetchone()
+        conn.close()
+        return row["role"] if row else None
+    return cached_read(f"grole:{chat_id}:{user_id}", ("group_roles",), load)
+
+
+def set_group_role(chat_id: int, user_id: int, role: str, by: int):
+    conn = db()
+    conn.execute(
+        "INSERT INTO group_roles (chat_id, user_id, role, assigned_by, ts) VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(chat_id, user_id) DO UPDATE SET role = excluded.role, "
+        "assigned_by = excluded.assigned_by, ts = excluded.ts",
+        (chat_id, user_id, role, by, now_kz().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_group_role(chat_id: int, user_id: int):
+    conn = db()
+    conn.execute("DELETE FROM group_roles WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
+    conn.commit()
+    conn.close()
+
+
+def list_group_roles(chat_id: int):
+    conn = db()
+    rows = conn.execute("SELECT * FROM group_roles WHERE chat_id = ? ORDER BY ts", (chat_id,)).fetchall()
+    conn.close()
+    return rows
+
+
+def find_user_by_username(username: str):
+    conn = db()
+    row = conn.execute(
+        "SELECT * FROM chats WHERE chat_id > 0 AND LOWER(username) = ?", (username.lstrip("@").lower(),)
+    ).fetchone()
+    conn.close()
+    return row
