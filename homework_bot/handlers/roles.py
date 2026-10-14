@@ -10,7 +10,7 @@ from ..db import (
     display_name, find_user_by_username, list_group_roles, list_known_users, register_chat,
     remove_group_role, roles_enabled, set_group_role, set_roles_enabled,
 )
-from ..roles import ROLES, has_perm, is_group_admin, parse_role, role_label, user_role
+from ..roles import SUGGESTIONS, clean_title, is_group_admin, role_label
 
 
 def _is_group(update: Update) -> bool:
@@ -35,8 +35,9 @@ async def roles_on_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_roles_enabled(chat_id, True, uid)
     await update.message.reply_text(
         "✅ Роли включены в этой группе.\n\n"
-        "Назначить: ответь на сообщение человека командой /setrole староста "
-        "(или /setrole зам @username). Роли: староста, зам, редактор, дежурный, ведущий.\n"
+        "Роли — это просто звания без особых прав. Назначить: ответь на сообщение человека "
+        "командой /setrole шут (или /setrole староста @username). Название любое, например: "
+        + ", ".join(SUGGESTIONS) + ".\n"
         "Список: /roles · снять: /unrole · выключить роли: /roles_off"
     )
 
@@ -76,27 +77,23 @@ async def setrole_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not roles_enabled(chat_id):
         await update.message.reply_text("В этой группе роли выключены. Админ группы может включить: /roles_on")
         return
-    if not (await is_group_admin(context.bot, chat_id, uid) or has_perm(chat_id, uid, "manage_roles")):
-        await update.message.reply_text("Назначать роли могут админы группы, староста и зам. старосты.")
+    if not await is_group_admin(context.bot, chat_id, uid):
+        await update.message.reply_text("Назначать роли может только админ группы.")
         return
     args = context.args or []
-    code = parse_role(args[0]) if args else None
-    if not code:
-        await update.message.reply_text("Напиши роль: староста, зам, редактор, дежурный или ведущий. Пример: ответом на сообщение /setrole дежурный")
+    title = clean_title(" ".join(a for a in args if not a.startswith("@")))
+    if not title:
+        await update.message.reply_text("Напиши роль. Пример: ответом на сообщение /setrole шут")
         return
-    target, label = await _resolve_target(update, context, args[1:])
+    target, label = await _resolve_target(update, context, [a for a in args if a.startswith("@")])
     if not target:
         await update.message.reply_text(
             "Не понял, кому. Ответь командой на сообщение человека"
-            + (f" ({label} не найден среди пользователей бота)." if label else " или укажи @username.")
+            + (f" ({label} не найден среди пользователей бота)." if label else " или добавь @username.")
         )
         return
-    # only a group admin may create/replace a headman or deputy
-    if code in ("headman", "deputy") and not await is_group_admin(context.bot, chat_id, uid):
-        await update.message.reply_text("Старосту и зама назначает только админ группы.")
-        return
-    set_group_role(chat_id, target, code, uid)
-    await update.message.reply_text(f"Готово: {html.escape(str(label))} — {role_label(code)}", parse_mode=ParseMode.HTML)
+    set_group_role(chat_id, target, title, uid)
+    await update.message.reply_text(f"Готово: {html.escape(str(label))} — {html.escape(role_label(title))}", parse_mode=ParseMode.HTML)
 
 
 async def unrole_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -104,16 +101,12 @@ async def unrole_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _group_only(update):
         return
     chat_id, uid = update.effective_chat.id, update.effective_user.id
-    if not (await is_group_admin(context.bot, chat_id, uid) or has_perm(chat_id, uid, "manage_roles")):
-        await update.message.reply_text("Снимать роли могут админы группы, староста и зам. старосты.")
+    if not await is_group_admin(context.bot, chat_id, uid):
+        await update.message.reply_text("Снимать роли может только админ группы.")
         return
     target, label = await _resolve_target(update, context, context.args or [])
     if not target:
         await update.message.reply_text("Ответь командой на сообщение человека или укажи @username.")
-        return
-    current = user_role(chat_id, target)
-    if current in ("headman", "deputy") and not await is_group_admin(context.bot, chat_id, uid):
-        await update.message.reply_text("Старосту и зама снимает только админ группы.")
         return
     remove_group_role(chat_id, target)
     await update.message.reply_text(f"Роль снята: {html.escape(str(label))}", parse_mode=ParseMode.HTML)
@@ -130,7 +123,7 @@ async def roles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     names = {r["chat_id"]: display_name(r) for r in list_known_users()}
     rows = list_group_roles(chat_id)
     if not rows:
-        await update.message.reply_text("Роли включены, но пока никому не назначены. Ответом на сообщение: /setrole староста")
+        await update.message.reply_text("Роли включены, но пока никому не назначены. Ответом на сообщение: /setrole шут")
         return
-    lines = [f"{role_label(r['role'])} — {html.escape(names.get(r['user_id'], 'id' + str(r['user_id'])))}" for r in rows if r["role"] in ROLES]
+    lines = [f"{html.escape(role_label(r['role']))} — {html.escape(names.get(r['user_id'], 'id' + str(r['user_id'])))}" for r in rows]
     await update.message.reply_text("🎭 <b>Роли группы</b>\n\n" + "\n".join(lines), parse_mode=ParseMode.HTML)
