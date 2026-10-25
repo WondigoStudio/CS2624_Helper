@@ -605,6 +605,11 @@ def init_db(target_url: str = None):
         "CREATE INDEX IF NOT EXISTS idx_activity_user ON activity_log (user_id, ts)",
     ):
         conn.execute(ddl)
+    if USE_POSTGRES:
+        try:
+            _sync_sequences(lambda sql: conn.execute(sql).fetchall())
+        except Exception as e:
+            logger.warning("Could not sync id sequences: %s", e)
     conn.commit()
     conn.close()
 
@@ -1315,6 +1320,30 @@ _MIRROR_TABLES = [
 ]
 
 
+def _sync_sequences(run):
+    """Postgres only. Moves every table's id sequence past its largest id.
+    Rows copied between databases (mirroring / restore) keep their explicit
+    ids but not the sequence, so the next INSERT would reuse an existing id
+    and fail with 'duplicate key value violates unique constraint ..._pkey'.
+    `run(sql)` executes SQL and returns the fetched rows."""
+    names = list(_MIRROR_TABLES) + ["activity_log"]
+    listed = ", ".join(f"'{n}'" for n in names)
+    tables = [
+        r[0] if not isinstance(r, dict) else r["table_name"]
+        for r in run(
+            "SELECT table_name FROM information_schema.columns WHERE column_name = 'id' "
+            f"AND table_schema = current_schema() AND table_name IN ({listed})"
+        )
+    ]
+    for t in tables:
+        run(
+            f"SELECT setval(pg_get_serial_sequence('{t}', 'id'), "
+            f"GREATEST(COALESCE((SELECT MAX(id) FROM {t}), 0), 1), "
+            f"COALESCE((SELECT MAX(id) FROM {t}), 0) > 0) "
+            f"WHERE pg_get_serial_sequence('{t}', 'id') IS NOT NULL"
+        )
+
+
 def export_all_tables() -> dict:
     """{table: [row dicts]} for every table, for a downloadable backup.
     LMS calendar links hold personal access tokens, so they are left out."""
@@ -1360,6 +1389,13 @@ def mirror_active_db_to(target_url: str) -> bool:
                 psycopg2.extras.execute_batch(
                     dst_cur, f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})", values,
                 )
+        def _run(sql):
+            dst_cur.execute(sql)
+            try:
+                return dst_cur.fetchall()
+            except psycopg2.ProgrammingError:
+                return []
+        _sync_sequences(_run)
         dst.commit()
         return True
     finally:
