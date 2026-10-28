@@ -1,9 +1,14 @@
 """Translation features: reply-to-a-message @mention translation, the
 dispatcher that also routes plain-word replies to the fun actions, and
-inline mode (@botusername <text> from anywhere in Telegram)."""
+inline mode (@botusername <text> from anywhere in Telegram).
+
+The target language is Russian by default. Start with a language name to pick
+another one: `@bot english привет`, `@bot на казахский привет`, or reply to a
+message with `@bot english`."""
 
 import asyncio
 import html
+import re
 
 from telegram import InlineQueryResultArticle, InputTextMessageContent, Update
 from telegram.constants import ParseMode
@@ -18,11 +23,54 @@ from .social import handle_action_reply
 # hammering the API (and its rate limit) once per character.
 _latest_inline_query_id: dict = {}
 
+DEFAULT_LANG = "Russian"
+
+# language name used in the prompt -> words people type for it
+_LANGS = {
+    "English": ["en", "eng", "english", "англ", "английский", "английском", "английскии"],
+    "Russian": ["ru", "rus", "russian", "рус", "русский", "русском"],
+    "Kazakh": ["kk", "kz", "kaz", "kazakh", "каз", "казахский", "казахском", "қазақша"],
+    "Turkish": ["tr", "turkish", "турецкий", "турецком"],
+    "German": ["de", "ger", "german", "немецкий", "немецком"],
+    "French": ["fr", "french", "французский", "французском"],
+    "Spanish": ["es", "spa", "spanish", "испанский", "испанском"],
+    "Italian": ["it", "italian", "итальянский", "итальянском"],
+    "Chinese": ["zh", "cn", "chinese", "китайский", "китайском"],
+    "Japanese": ["ja", "jp", "japanese", "японский", "японском"],
+    "Korean": ["ko", "korean", "корейский", "корейском"],
+    "Arabic": ["ar", "arabic", "арабский", "арабском"],
+    "Ukrainian": ["uk", "ua", "ukrainian", "украинский", "украинском"],
+    "Portuguese": ["pt", "portuguese", "португальский", "португальском"],
+    "Polish": ["pl", "polish", "польский", "польском"],
+    "Uzbek": ["uz", "uzbek", "узбекский", "узбекском"],
+}
+_ALIAS = {w: name for name, words in _LANGS.items() for w in words}
+_PREPOSITIONS = {"на", "to", "in", "в"}
+
+
+def _lang_for(word: str):
+    return _ALIAS.get(re.sub(r"[^\w]", "", word.lower()))
+
+
+def split_language(text: str):
+    """('English', 'привет') for 'english привет' / 'на английский привет';
+    (None, text) when the text does not start with a language name. A language
+    name alone (no text after it) is treated as ordinary text."""
+    parts = text.strip().split(None, 2)
+    if not parts:
+        return None, text
+    i = 1 if parts[0].lower() in _PREPOSITIONS and len(parts) > 1 else 0
+    lang = _lang_for(parts[i])
+    rest = " ".join(text.strip().split()[i + 1:])
+    if lang and rest:
+        return lang, rest
+    return None, text
+
 
 # ---------------------------------------------------------------------------
-# Translation to Russian (reply + mention the bot) — Groq's free chat models
+# Translation (reply + mention the bot, or inline) — Groq's free chat models
 # ---------------------------------------------------------------------------
-def _translate_with_groq(text: str) -> str:
+def _translate_with_groq(text: str, target: str = DEFAULT_LANG) -> str:
     """Blocking HTTP call — run via asyncio.to_thread. Uses a plain chat
     completion (Groq's Whisper endpoint only transcribes, it doesn't
     translate arbitrary already-written text)."""
@@ -35,11 +83,11 @@ def _translate_with_groq(text: str) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "You are a translator. Translate the user's message into "
-                        "Russian, however many languages it mixes or whatever language "
-                        "it's already in. Output ONLY the translation itself — no "
-                        "quotes, no explanations, no language names, nothing else. "
-                        "If the text is already entirely in Russian, output it unchanged."
+                        f"You are a translator. Translate the user's message into "
+                        f"{target}, however many languages it mixes or whatever language "
+                        f"it's already in. Output ONLY the translation itself — no "
+                        f"quotes, no explanations, no language names, nothing else. "
+                        f"If the text is already entirely in {target}, output it unchanged."
                     ),
                 },
                 {"role": "user", "content": text},
@@ -58,6 +106,15 @@ def _message_mentions_bot(update: Update, bot_username: str) -> bool:
         return False
     return f"@{bot_username.lower()}" in msg.text.lower()
 
+
+def _language_after_mention(text: str, bot_username: str) -> str:
+    """'@bot english' (a reply) -> 'English'; anything else -> Russian."""
+    rest = re.sub(rf"@{re.escape(bot_username)}", " ", text, flags=re.I).strip()
+    if not rest:
+        return DEFAULT_LANG
+    words = rest.split()
+    i = 1 if words[0].lower() in _PREPOSITIONS and len(words) > 1 else 0
+    return _lang_for(words[i]) or DEFAULT_LANG
 
 
 async def handle_translate_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -79,10 +136,11 @@ async def handle_translate_reply(update: Update, context: ContextTypes.DEFAULT_T
         await msg.reply_text("В этом сообщении нет текста для перевода.")
         return
 
+    target = _language_after_mention(msg.text or "", context.bot.username)
     status = await msg.reply_text("🌐 Перевожу…")
     try:
-        translated = await asyncio.to_thread(_translate_with_groq, source_text)
-        quoted = f"🌐 Перевод:\n<blockquote>{html.escape(translated)}</blockquote>"
+        translated = await asyncio.to_thread(_translate_with_groq, source_text, target)
+        quoted = f"🌐 Перевод ({html.escape(target)}):\n<blockquote>{html.escape(translated)}</blockquote>"
         await status.edit_text(quoted, parse_mode=ParseMode.HTML)
     except requests.exceptions.RequestException as e:
         logger.warning("Groq translation request failed: %s", e)
@@ -90,9 +148,6 @@ async def handle_translate_reply(update: Update, context: ContextTypes.DEFAULT_T
     except Exception as e:
         logger.warning("Translation failed: %s", e)
         await status.edit_text("Не получилось перевести это сообщение.")
-
- 
-
 
 
 async def inline_translate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,10 +160,10 @@ async def inline_translate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineQueryResultArticle(
                     id="hint",
-                    title="Напиши текст для перевода на русский",
-                    description="Например: @имя_бота Hello, how are you?",
+                    title="Напиши текст для перевода (по умолчанию на русский)",
+                    description="Другой язык: @имя_бота english привет · на казахский Hello",
                     input_message_content=InputTextMessageContent(
-                        "Напиши что-нибудь после имени бота, чтобы перевести на русский."
+                        "Напиши текст после имени бота. Чтобы выбрать язык, начни с его названия: english привет."
                     ),
                 )
             ],
@@ -125,8 +180,10 @@ async def inline_translate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if _latest_inline_query_id.get(user_id) != query.id:
         return
 
+    lang, body = split_language(text)
+    target = lang or DEFAULT_LANG
     try:
-        translated = await asyncio.to_thread(_translate_with_groq, text)
+        translated = await asyncio.to_thread(_translate_with_groq, body, target)
     except Exception as e:
         logger.warning("Inline translation failed: %s", e)
         translated = None
@@ -144,11 +201,9 @@ async def inline_translate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         results = [
             InlineQueryResultArticle(
                 id="translation",
-                title="🌐 Отправить перевод",
+                title=f"🌐 Отправить перевод ({target})",
                 description=translated[:100],
                 input_message_content=InputTextMessageContent(translated),
             )
         ]
     await query.answer(results, cache_time=1, is_personal=True)
-
-
