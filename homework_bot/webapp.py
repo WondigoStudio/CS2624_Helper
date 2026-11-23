@@ -33,6 +33,8 @@ from urllib.parse import parse_qsl
 from .ai_format import STRUCTURE_MIN_LENGTH, _sanitize_telegram_html, _structure_with_groq
 from .config import BOT_TOKEN, GROQ_API_KEY, SHARED_TASKS_ID, logger, requests
 from .constants import ACTIVE_SUBJECT_CODES, SUBJECT_EMOJI, SUBJECT_NAME, SUBJECTS
+from . import risk as risk_mod
+from . import vacation
 from .gpa import scale_json as gpa_scale_json
 from .syllabi import SCALE, SYLLABI, valid_scores
 from .db import (
@@ -131,6 +133,13 @@ def _task_json(row, att_counts=None) -> dict:
     }
 
 
+def _vacation_banner():
+    cfg = vacation.get()
+    if not vacation.is_active(cfg):
+        return None
+    return {"end": cfg["end"].isoformat() if cfg.get("end") else None}
+
+
 def build_state(user: dict) -> dict:
     uid = user["id"]
     today = today_kz()
@@ -182,6 +191,7 @@ def build_state(user: dict) -> dict:
         "can_edit": can(uid, "tasks"),
         "can_schedule": can(uid, "schedule"),
         "is_admin": admin,
+        "vacation": _vacation_banner(),
         "today": today.isoformat(),
         "weekday": today.weekday(),
         "now": now_kz().strftime("%H:%M"),
@@ -500,8 +510,35 @@ def act_grades_save(user, body):
     subject = body.get("subject")
     if subject not in SYLLABI:
         raise ApiError(400, "bad_subject")
-    save_grades(user["id"], subject, valid_scores(subject, body.get("scores")))
+    scores = valid_scores(subject, body.get("scores"))
+    before = risk_mod.assess(subject, (get_grades(user["id"]).get(subject) or {}))["status"]
+    save_grades(user["id"], subject, scores)
+    _background.submit(_risk_alert, user["id"], subject, before, scores)
     return {"ok": True}
+
+
+_risk_alerted = {}  # (user, subject, status) -> time of the last heads-up, so near-threshold edits don't spam
+
+
+def _risk_alert(user_id: int, subject: str, before: str, scores: dict):
+    """Tells the person (once per 6 h) when saving scores moved a subject into a worse risk class."""
+    try:
+        after = risk_mod.assess(subject, scores)
+        if risk_mod.SEVERITY[after["status"]] <= max(risk_mod.SEVERITY[before], 0) or after["status"] in ("none", "ok"):
+            return
+        if vacation.silent():
+            return
+        key = (user_id, subject, after["status"])
+        now = time.time()
+        if now - _risk_alerted.get(key, 0) < 6 * 3600:
+            return
+        _risk_alerted[key] = now
+        text = "⚠️ " + risk_mod.subject_text(subject, after, SUBJECT_NAME.get(subject, subject)) \
+            + "\n\nВсе предметы: /risk"
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                      json={"chat_id": user_id, "text": text, "parse_mode": "HTML"}, timeout=15)
+    except Exception as e:
+        logger.warning("risk alert skipped: %s", e)
 
 
 _ROUTES = {
