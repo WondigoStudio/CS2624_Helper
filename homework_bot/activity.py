@@ -47,7 +47,7 @@ CALLBACK_LABELS = {
     "remdel": "удаляет напоминание", "remwd": "создаёт напоминание", "remwhen": "создаёт напоминание",
     "bdaydel": "удаляет день рождения", "bdayfilter": "дни рождения", "bdaytarget": "дни рождения",
     "phtgt": "фото кабинета", "syl": "смотрит силлабус",
-    "anon": "анонимные сообщения", "testph": "тест фото", "ytdl": "скачивает видео",
+    "anon": "анонимные сообщения", "nsem": "новый семестр", "testph": "тест фото", "ytdl": "скачивает видео",
 }
 
 
@@ -150,3 +150,4 @@ def flush_now():
 
 def handler():
     return TypeHandler(Update, log_activity)
+
