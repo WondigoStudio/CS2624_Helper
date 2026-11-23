@@ -271,6 +271,7 @@ def valid_scores(code: str, raw) -> dict:
             limits[c["k"]] = c["outof"]
     if sy.get("final"):
         limits["final"] = sy["final"]["outof"]
+    limits.update({"_cr": 30, "_at": 500, "_am": 500})  # credits, lessons in total / missed (for the risk check)
     for i in range(len(sy["atts"])):
         limits[f"att{i + 1}"] = 100  # "from the LMS" mode: Register Midterm / Register Endterm as shown there
     out = {}
