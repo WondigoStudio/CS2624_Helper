@@ -33,6 +33,7 @@ from urllib.parse import parse_qsl
 from .ai_format import STRUCTURE_MIN_LENGTH, _sanitize_telegram_html, _structure_with_groq
 from .config import BOT_TOKEN, GROQ_API_KEY, SHARED_TASKS_ID, logger, requests
 from .constants import ACTIVE_SUBJECT_CODES, SUBJECT_EMOJI, SUBJECT_NAME, SUBJECTS
+from .gpa import scale_json as gpa_scale_json
 from .syllabi import SCALE, SYLLABI, valid_scores
 from .db import (
     attachment_counts,
@@ -532,7 +533,7 @@ def _index_page():
         # static syllabus data is embedded in the page itself (it changes only with a deploy)
         raw = raw.replace(
             b"/*SYLLABI_JSON*/null",
-            json.dumps({"syllabi": SYLLABI, "scale": SCALE}, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/").encode("utf-8"),
+            json.dumps({"syllabi": SYLLABI, "scale": SCALE, "gpa": gpa_scale_json()}, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/").encode("utf-8"),
             1,
         )
         _index_cache.update(
