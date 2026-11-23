@@ -202,3 +202,60 @@ def room_caption(room, suffix: str = "") -> str:
     info = describe_room(room)
     return f"📍 Кабинет {room}" + (f" · {info}" if info else "") + suffix
 
+
+# --- Lesson length, breaks between lessons ---------------------------------------------
+LESSON_MINUTES = 50        # every lesson lasts 50 minutes
+LONG_BREAK_MINUTES = 30    # a gap this long (or longer) between lessons is shown as a "long break"
+
+
+def _to_minutes(time_str: str):
+    try:
+        h, m = time_str.split(":")
+        return int(h) * 60 + int(m)
+    except (AttributeError, ValueError):
+        return None
+
+
+def _to_hhmm(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def lesson_end(time_str: str):
+    """'09:00' -> '09:50' (None if the time is not HH:MM)."""
+    start = _to_minutes(time_str)
+    return None if start is None else _to_hhmm(start + LESSON_MINUTES)
+
+
+def gap_minutes(prev_time: str, next_time: str):
+    """Minutes between the END of the lesson starting at prev_time and the start of the next one."""
+    a, b = _to_minutes(prev_time), _to_minutes(next_time)
+    if a is None or b is None:
+        return None
+    return b - (a + LESSON_MINUTES)
+
+
+def format_duration(minutes: int) -> str:
+    h, m = divmod(int(minutes), 60)
+    if h and m:
+        return f"{h} ч {m} мин"
+    return f"{h} ч" if h else f"{m} мин"
+
+
+def long_break(prev_row, next_row):
+    """(from 'HH:MM', to 'HH:MM', 'N ч M мин') if the gap between two consecutive lessons
+    is a long one, otherwise None."""
+    gap = gap_minutes(prev_row["time"], next_row["time"])
+    if gap is None or gap < LONG_BREAK_MINUTES:
+        return None
+    return lesson_end(prev_row["time"]), next_row["time"], format_duration(gap)
+
+
+def continues_previous(prev_row, row, max_gap: int) -> bool:
+    """True if `row` is a direct continuation of `prev_row`: the same subject in the same
+    room, starting right after it ends (a gap of at most max_gap minutes). Then there is
+    nothing to be warned about — the person is already sitting in that room."""
+    if prev_row["subject"] != row["subject"] or room_base(prev_row["room"]) != room_base(row["room"]):
+        return False
+    gap = gap_minutes(prev_row["time"], row["time"])
+    return gap is not None and 0 <= gap <= max_gap
+
