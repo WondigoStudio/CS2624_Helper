@@ -15,6 +15,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
  
 from ..config import ADMIN_IDS
+from ..menu_kb import MENU_TEXT
 from ..db import (
     anon_block, anon_count_since, anon_create, anon_get, anon_is_blocked, anon_is_optout,
     anon_recent, anon_set_optout, anon_set_status, display_name, get_chat_thread, list_known_users, register_chat,
@@ -239,6 +240,8 @@ async def anon_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not st:
         return
     text = (update.message.text or "").strip()
+    if MENU_TEXT.check_update(update):  # a menu button, not part of the anonymous message
+        return
     uid = update.effective_user.id
     if st["step"] == "pick_user":
         needle = text.lstrip("@").lower()
@@ -264,3 +267,4 @@ async def anon_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
             reply_markup=_kb([("✅ Отправить", "anon:send"), ("✖ Отмена", "anon:cancel")]),
         )
+
