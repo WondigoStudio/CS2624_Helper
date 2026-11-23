@@ -82,7 +82,11 @@ from .states import (
     TYPING_TITLE,
 )
 
+from . import menu_kb as K
+from .menu_kb import MENU_TEXT, entry as menu_entry
 from .handlers.start import app_cmd, start
+from .handlers.gpa import gpa_callback, gpa_text
+from .handlers.menu import gpa_reset_handler, gpa_section_cmd, hide_menu, menu_cmd, menu_handler
 from .handlers.weather import weather_cmd
 from .handlers.lms import lms_cancel, lms_file_received, lms_start, lms_url_typed, lmsoff_cmd, lmssync_cmd
 from .handlers.tasks import (
@@ -293,38 +297,43 @@ def main():
     )
     app.add_error_handler(_on_error)
 
+    # free-text steps of the dialogs; a tap on a menu button is never taken as the answer
+    TEXT_INPUT = filters.TEXT & ~filters.COMMAND & ~MENU_TEXT
+
     add_conv = ConversationHandler(
-        entry_points=[CommandHandler("add", add_start)],
+        entry_points=[CommandHandler("add", add_start), MessageHandler(menu_entry(K.T_ADD), add_start)],
+        allow_reentry=True,
         states={
             CHOOSING_SUBJECT: [CallbackQueryHandler(add_subject_chosen, pattern="^addsub:")],
-            TYPING_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_title_typed)],
+            TYPING_TITLE: [MessageHandler(TEXT_INPUT, add_title_typed)],
             TYPING_DESCRIPTION: [
                 CallbackQueryHandler(add_description_skip, pattern="^nodesc$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_description_typed),
+                MessageHandler(TEXT_INPUT, add_description_typed),
             ],
-            TYPING_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_date_typed)],
+            TYPING_DATE: [MessageHandler(TEXT_INPUT, add_date_typed)],
             TYPING_TIME: [
                 CallbackQueryHandler(add_time_skip, pattern="^notime$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_time_typed),
+                MessageHandler(TEXT_INPUT, add_time_typed),
             ],
             TYPING_ATTACHMENT: [
                 CallbackQueryHandler(add_attachment_done, pattern="^attachdone$"),
                 MessageHandler(filters.PHOTO, add_attachment_photo),
                 MessageHandler(filters.Document.ALL, add_attachment_document),
-                MessageHandler(~filters.COMMAND, add_attachment_invalid),
+                MessageHandler(~filters.COMMAND & ~MENU_TEXT, add_attachment_invalid),
             ],
         },
         fallbacks=[CommandHandler("cancel", add_cancel)],
     )
 
     schedule_add_conv = ConversationHandler(
-        entry_points=[CommandHandler("schedule_add", schedule_add_start)],
+        entry_points=[CommandHandler("schedule_add", schedule_add_start), MessageHandler(menu_entry(K.S_ADD), schedule_add_start)],
+        allow_reentry=True,
         states={
             CHOOSING_TARGET_USER: [CallbackQueryHandler(schedule_target_chosen, pattern="^schtgt:")],
             SCH_WEEKDAY: [CallbackQueryHandler(schedule_weekday_chosen, pattern="^schwd:")],
             SCH_SUBJECT: [CallbackQueryHandler(schedule_subject_chosen, pattern="^schsub:")],
-            SCH_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_time_typed)],
-            SCH_ROOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_room_typed)],
+            SCH_TIME: [MessageHandler(TEXT_INPUT, schedule_time_typed)],
+            SCH_ROOM: [MessageHandler(TEXT_INPUT, schedule_room_typed)],
         },
         fallbacks=[CommandHandler("cancel", schedule_cancel)],
     )
@@ -333,7 +342,7 @@ def main():
         entry_points=[CommandHandler("addroomphoto", addroomphoto_start)],
         states={
             PHOTO_TARGET_USER: [CallbackQueryHandler(addroomphoto_target_chosen, pattern="^phtgt:")],
-            PHOTO_ROOM_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addroomphoto_room_typed)],
+            PHOTO_ROOM_NAME: [MessageHandler(TEXT_INPUT, addroomphoto_room_typed)],
             PHOTO_WAITING: [
                 MessageHandler(filters.PHOTO, addroomphoto_photo_received),
                 MessageHandler(filters.Document.IMAGE, addroomphoto_document_received),
@@ -344,34 +353,36 @@ def main():
     )
 
     edittask_conv = ConversationHandler(
-        entry_points=[CommandHandler("edittask", edittask_start)],
+        entry_points=[CommandHandler("edittask", edittask_start), MessageHandler(menu_entry(K.T_EDIT), edittask_start)],
+        allow_reentry=True,
         states={
             EDIT_TASK_PICK: [CallbackQueryHandler(edittask_picked, pattern="^edittask:")],
             EDIT_TASK_FIELD: [CallbackQueryHandler(edittask_field_chosen, pattern="^editfield:")],
             EDIT_TASK_SUBJECT: [CallbackQueryHandler(edittask_subject_chosen, pattern="^edittasksub:")],
-            EDIT_TASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_title_typed)],
-            EDIT_TASK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_date_typed)],
+            EDIT_TASK_TITLE: [MessageHandler(TEXT_INPUT, edittask_title_typed)],
+            EDIT_TASK_DATE: [MessageHandler(TEXT_INPUT, edittask_date_typed)],
             EDIT_TASK_TIME: [
                 CallbackQueryHandler(edittask_time_skip, pattern="^edittasktime:none$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_time_typed),
+                MessageHandler(TEXT_INPUT, edittask_time_typed),
             ],
             EDIT_TASK_DESCRIPTION: [
                 CallbackQueryHandler(edittask_description_clear, pattern="^edittaskdesc:none$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edittask_description_typed),
+                MessageHandler(TEXT_INPUT, edittask_description_typed),
             ],
             EDIT_TASK_ATTACHMENT: [
                 CallbackQueryHandler(edittask_attachment_clear, pattern="^edittaskattach:clear$"),
                 CallbackQueryHandler(edittask_attachment_done, pattern="^edittaskattach:done$"),
                 MessageHandler(filters.PHOTO, edittask_attachment_photo),
                 MessageHandler(filters.Document.ALL, edittask_attachment_document),
-                MessageHandler(~filters.COMMAND, edittask_attachment_invalid),
+                MessageHandler(~filters.COMMAND & ~MENU_TEXT, edittask_attachment_invalid),
             ],
         },
         fallbacks=[CommandHandler("cancel", add_cancel)],
     )
 
     editschedule_conv = ConversationHandler(
-        entry_points=[CommandHandler("editschedule", editschedule_start)],
+        entry_points=[CommandHandler("editschedule", editschedule_start), MessageHandler(menu_entry(K.S_EDIT), editschedule_start)],
+        allow_reentry=True,
         states={
             EDIT_LESSON_PICK: [
                 CallbackQueryHandler(editschedule_owner_chosen, pattern="^edowner:"),
@@ -380,50 +391,54 @@ def main():
             EDIT_LESSON_FIELD: [CallbackQueryHandler(editschedule_field_chosen, pattern="^editlfield:")],
             EDIT_LESSON_WEEKDAY: [CallbackQueryHandler(editschedule_weekday_chosen, pattern="^editlwd:")],
             EDIT_LESSON_SUBJECT: [CallbackQueryHandler(editschedule_subject_chosen, pattern="^editlsub:")],
-            EDIT_LESSON_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, editschedule_time_typed)],
-            EDIT_LESSON_ROOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, editschedule_room_typed)],
+            EDIT_LESSON_TIME: [MessageHandler(TEXT_INPUT, editschedule_time_typed)],
+            EDIT_LESSON_ROOM: [MessageHandler(TEXT_INPUT, editschedule_room_typed)],
         },
         fallbacks=[CommandHandler("cancel", schedule_cancel)],
     )
 
     remind_conv = ConversationHandler(
-        entry_points=[CommandHandler("remind", remind_start)],
+        entry_points=[CommandHandler("remind", remind_start), MessageHandler(menu_entry(K.R_ADD), remind_start)],
+        allow_reentry=True,
         states={
-            REMIND_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_text_typed)],
+            REMIND_TEXT: [MessageHandler(TEXT_INPUT, remind_text_typed)],
             REMIND_WHEN: [CallbackQueryHandler(remind_when_chosen, pattern="^remwhen:")],
-            REMIND_DAILY_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_daily_time_typed)],
+            REMIND_DAILY_TIME: [MessageHandler(TEXT_INPUT, remind_daily_time_typed)],
             REMIND_WEEKLY_DAY: [CallbackQueryHandler(remind_weekly_day_chosen, pattern="^remwd:")],
-            REMIND_WEEKLY_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_weekly_time_typed)],
-            REMIND_CUSTOM_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_custom_date_typed)],
-            REMIND_CUSTOM_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_custom_time_typed)],
+            REMIND_WEEKLY_TIME: [MessageHandler(TEXT_INPUT, remind_weekly_time_typed)],
+            REMIND_CUSTOM_DATE: [MessageHandler(TEXT_INPUT, remind_custom_date_typed)],
+            REMIND_CUSTOM_TIME: [MessageHandler(TEXT_INPUT, remind_custom_time_typed)],
         },
         fallbacks=[CommandHandler("cancel", remind_cancel)],
     )
 
     addbirthday_conv = ConversationHandler(
-        entry_points=[CommandHandler("addbirthday", addbirthday_start)],
+        entry_points=[CommandHandler("addbirthday", addbirthday_start), MessageHandler(menu_entry(K.B_ADD), addbirthday_start)],
+        allow_reentry=True,
         states={
             BDAY_TARGET: [CallbackQueryHandler(addbirthday_target_chosen, pattern="^bdaytarget:")],
-            BDAY_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addbirthday_date_typed)],
+            BDAY_DATE: [MessageHandler(TEXT_INPUT, addbirthday_date_typed)],
         },
         fallbacks=[CommandHandler("cancel", addbirthday_cancel)],
     )
 
     lms_conv = ConversationHandler(
-        entry_points=[CommandHandler("lms", lms_start)],
+        entry_points=[CommandHandler("lms", lms_start), MessageHandler(menu_entry(K.T_LMS), lms_start)],
+        allow_reentry=True,
         states={
             LMS_URL: [
                 MessageHandler(filters.Document.ALL, lms_file_received),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, lms_url_typed),
+                MessageHandler(TEXT_INPUT, lms_url_typed),
             ],
         },
         fallbacks=[CommandHandler("cancel", lms_cancel)],
     )
 
     importbirthdays_conv = ConversationHandler(
-        entry_points=[CommandHandler("importbirthdays", importbirthdays_start)],
+        entry_points=[CommandHandler("importbirthdays", importbirthdays_start), MessageHandler(menu_entry(K.B_IMPORT), importbirthdays_start)],
+        allow_reentry=True,
         states={
-            BDAY_IMPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, importbirthdays_text)],
+            BDAY_IMPORT: [MessageHandler(TEXT_INPUT, importbirthdays_text)],
         },
         fallbacks=[CommandHandler("cancel", importbirthdays_cancel)],
     )
@@ -432,6 +447,9 @@ def main():
     # Основные хэндлеры бота
     # ----------------------------------------------------
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu_cmd))
+    app.add_handler(CommandHandler("hidemenu", hide_menu))
+    app.add_handler(CommandHandler("gpa", gpa_section_cmd))
     app.add_handler(CommandHandler("app", app_cmd))
     app.add_handler(CommandHandler("weather", weather_cmd))
     app.add_handler(add_conv)
@@ -446,6 +464,11 @@ def main():
     app.add_handler(CallbackQueryHandler(reminder_confirm_chosen, pattern="^remconfirm:"))
     app.add_handler(addbirthday_conv)
     app.add_handler(importbirthdays_conv)
+    # button menu (its dialog buttons are entry points of the conversations above) + GPA tools
+    app.add_handler(gpa_reset_handler(), group=-1)
+    app.add_handler(menu_handler())
+    app.add_handler(CallbackQueryHandler(gpa_callback, pattern="^gpa:"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~MENU_TEXT, gpa_text), group=2)
     app.add_handler(CommandHandler("birthdays", birthdays_cmd))
     app.add_handler(CommandHandler("nextbirthday", nextbirthday_cmd))
     app.add_handler(CallbackQueryHandler(birthday_delete_chosen, pattern="^bdaydel:"))
