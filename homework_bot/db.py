@@ -20,7 +20,7 @@ from .config import (
     logger,
     psycopg2,
 )
-from .utils import is_task_overdue, now_kz
+from .utils import is_task_overdue, now_kz, room_base
 
 # --- Multi-database failover --------------------------------------------
 # Postgres only. _DB_URLS is the priority order: the primary (DATABASE_URL)
@@ -1172,7 +1172,17 @@ def _room_photos() -> dict:
 
 
 def get_room_photo(chat_id: int, room: str):
-    return _room_photos().get((chat_id, room))
+    photos = _room_photos()
+    hit = photos.get((chat_id, room))
+    if hit is not None:
+        return hit
+    # C1.3.234, C1.3.234L and C1.3.234P are one physical room: a photo saved under
+    # any of those spellings serves them all
+    base = room_base(room)
+    for (cid, r), value in photos.items():
+        if cid == chat_id and room_base(r) == base:
+            return value
+    return None
 
 
 def list_room_photos(chat_id: int):
