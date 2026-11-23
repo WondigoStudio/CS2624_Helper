@@ -2,8 +2,7 @@
 managing the shared schedule."""
 
 from .config import ADMIN_IDS
-from .db import db
-from .utils import now_kz
+from .db import all_user_perms, db
 
 
 def is_admin(user_id: int) -> bool:
@@ -17,19 +16,11 @@ PERMS = {"tasks": "Задания", "schedule": "Расписание", "lms": "
 def can(user_id: int, perm: str) -> bool:
     if is_admin(user_id):
         return True
-    conn = db()
-    row = conn.execute(
-        "SELECT 1 FROM user_perms WHERE user_id = ? AND perm = ?", (user_id, perm)
-    ).fetchone()
-    conn.close()
-    return bool(row)
+    return perm in all_user_perms().get(user_id, ())
 
 
 def user_perms(user_id: int) -> set:
-    conn = db()
-    rows = conn.execute("SELECT perm FROM user_perms WHERE user_id = ?", (user_id,)).fetchall()
-    conn.close()
-    return {r["perm"] for r in rows}
+    return set(all_user_perms().get(user_id, ()))
 
 
 def set_perm(user_id: int, perm: str, on: bool):
@@ -50,3 +41,4 @@ def set_perm(user_id: int, perm: str, on: bool):
 def is_schedule_allowed(user_id: int) -> bool:
     """Kept for old call sites: the timetable permission."""
     return can(user_id, "schedule")
+
