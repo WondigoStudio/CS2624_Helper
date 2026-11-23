@@ -522,7 +522,7 @@ function gActive(code, sc) { const sy = GR.syllabi[code]; return gMode(code, sc)
 function gResultHtml(sy, sc) {
   const r = gcalc(sy, sc);
   const letter = gletter(r.cur, sy);
-  let h = `<div class="gr-head"><div><div class="sub">Сейчас набрано</div><div class="gr-big">${fmt2(r.cur)}<span class="sub" style="font-size:18px"> / 100</span></div></div>
+  let h = gRiskHtml(gui.sub, sc) + `<div class="gr-head"><div><div class="sub">Сейчас набрано</div><div class="gr-big">${fmt2(r.cur)}<span class="sub" style="font-size:18px"> / 100</span></div></div>
     <div class="gr-letter">${r.all ? "Итог: " + letter : r.pace === null ? "" : "прогноз: " + gletter(r.pace * 100, sy)}</div></div>
     <div class="gr-grid">
       <div class="box"><span class="sub">Максимум теперь</span><b>${fmt2(r.best)}</b></div>
@@ -575,6 +575,11 @@ function renderGrades() {
     });
     if (sy.final) h += `<h2>Финал</h2><div class="card"><div class="grin"><div class="grow"><div style="font-size:15px">${esc(sy.final.l)}</div><div class="sub" style="font-size:12px">вес в курсе: ${sy.weights[2] * 100}%</div></div>${inp("final", sy.final.outof, sc.final)}</div></div>`;
   }
+  h += `<h2>Кредиты и посещаемость</h2><div class="card"><div class="three" style="grid-template-columns:1fr 1fr 1fr">
+    <div><label style="margin-top:0">Кредиты</label><input data-gk="_cr" data-max="30" inputmode="decimal" autocomplete="off" placeholder="${sy.credits || "5"}" value="${isNum(sc._cr) ? sc._cr : ""}"></div>
+    <div><label style="margin-top:0">Занятий всего</label><input data-gk="_at" data-max="500" inputmode="numeric" autocomplete="off" placeholder="30" value="${isNum(sc._at) ? sc._at : ""}"></div>
+    <div><label style="margin-top:0">Пропущено</label><input data-gk="_am" data-max="500" inputmode="numeric" autocomplete="off" placeholder="5" value="${isNum(sc._am) ? sc._am : ""}"></div></div>
+    <div class="note">Нужны для проверки риска FX / ретейка и цены ретейка: вес предмета смотри в Curriculum на du.astanait.edu.kz.</div></div>`;
   h += `<h2>Итог</h2><div class="card" id="gr-out">${gResultHtml(gActive(gui.sub, sc), sc)}</div>
     <div class="note" style="margin:6px 4px">Оставляй поле пустым, пока работа не оценена. Баллы сохраняются на сервере. Режим «Итоги из LMS» берёт готовые Register Midterm / Endterm, «По каждой работе» считает сам. Расчёт — по силлабусам 2026–2027, официальные оценки смотри в LMS.</div>`;
   el.innerHTML = h;
@@ -587,7 +592,7 @@ function gOnInput(inp) {
   if (raw === "") delete sc[k];
   else {
     // several marks separated by spaces or ";" (e.g. "100 87,5 90") are averaged
-    const parts = raw.split(/[\s;]+/).filter(Boolean);
+    const parts = k[0] === "_" ? [raw] : raw.split(/[\s;]+/).filter(Boolean);
     if (/[.,]$/.test(raw) || !parts.length) return;
     const nums = parts.map(p => Number(p.replace(",", ".")));
     if (nums.some(n => !isFinite(n))) return;
@@ -614,6 +619,119 @@ document.addEventListener("change", (ev) => {
   }
 });
 
+
+
+/* ---------- risk check: FX / retake (same rules as risk.py) ---------- */
+const RK = { reg: 25, term: 50, fin: 50, missed: 30, warnReg: 35, warnTerm: 55, credit: 20000, fx: 20000 };
+const RICON = { none: "⚪", ok: "🟢", warn: "🟡", fx: "🟠", retake: "🔴" };
+const RLABEL = { none: "нет данных", ok: "всё в порядке", warn: "есть риск", fx: "FX", retake: "ретейк" };
+const RSEV = { none: 0, ok: 0, warn: 1, fx: 2, retake: 3 };
+const money = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₸";
+function gRisk(code, sc) {
+  const base = GR.syllabi[code], sy = gActive(code, sc), r = gcalc(sy, sc);
+  const atts = r.atts.map(a => Object.assign({ started: a.reg.gmax + a.exam.gmax > 0 }, a));
+  const fin = sy.final && isNum(sc.final) ? sc.final / sy.final.outof * 100 : null;
+  const credits = isNum(sc._cr) && sc._cr > 0 ? sc._cr : base.credits;
+  const hasAtt = isNum(sc._at) && isNum(sc._am) && sc._at > 0 && sc._am >= 0 && sc._am <= sc._at;
+  const hasScores = atts.some(a => a.started) || fin !== null;
+  const retake = [], fx = [], warn = [], tips = [];
+  if (hasAtt) {
+    const missed = sc._am / sc._at * 100;
+    if (missed > RK.missed) retake.push(`посещаемость ${fmtInt(100 - missed)}% — нужно больше 70%`);
+    else if (missed === RK.missed) warn.push("посещаемость ровно 70% — по правилам нужно больше 70%, следующий пропуск уже критичен");
+    else if (sc._at * RK.missed / 100 - sc._am < 1) warn.push("почти исчерпан лимит пропусков");
+  }
+  atts.forEach((a, i) => {
+    const name = i === 0 ? "RegMid" : "RegEnd";
+    if (a.best <= RK.reg) retake.push(`${name}: даже с максимумом за остальное выйдет ${fmtInt(a.best)}% — нужно больше ${RK.reg}%`);
+    else if (a.complete && a.total <= RK.warnReg) warn.push(`${name} ${fmtInt(a.total)}% — на грани (нужно больше ${RK.reg}%)`);
+  });
+  if (atts.length === 2) {
+    const bestTerm = (atts[0].best + atts[1].best) / 2;
+    if (bestTerm <= RK.term) retake.push(`RegTerm: максимум, который ещё можно получить, — ${fmtInt(bestTerm)}% (нужно больше ${RK.term}%)`);
+    else if (atts[0].complete && atts[1].complete) {
+      const term = (atts[0].total + atts[1].total) / 2;
+      if (term <= RK.warnTerm) warn.push(`RegTerm ${fmtInt(term)}% — на грани (нужно больше ${RK.term}%)`);
+      if (fin === null) tips.push(`на финале нужно набрать больше ${RK.fin}%`);
+    } else if (atts[0].complete !== atts[1].complete) {
+      const done = atts[0].complete ? atts[0] : atts[1];
+      if (done.total <= RK.warnTerm) warn.push(`одна аттестация закрыта на ${fmtInt(done.total)}% — средний RegTerm должен быть больше ${RK.term}%`);
+    }
+  }
+  if (sy.final) { if (fin !== null && fin <= RK.fin && !retake.length) fx.push(`финал ${fmtInt(fin)}% — нужно больше ${RK.fin}%`); }
+  else {
+    const total = atts.reduce((acc, a, i) => acc + a.total * sy.weights[i], 0);
+    if (atts.every(a => a.complete) && total < 50 && !retake.length) fx.push(`итог ${fmtInt(total)}% — меньше 50%`);
+  }
+  const status = !hasScores && !hasAtt ? "none" : retake.length ? "retake" : fx.length ? "fx" : warn.length ? "warn" : "ok";
+  return { status, reasons: retake.length ? retake : fx.length ? fx : warn, tips, credits,
+    retakeCost: status === "retake" && credits ? credits * RK.credit : null, fxCost: status === "fx" ? RK.fx : null };
+}
+function fmtInt(x) { return String(Math.round(x)); }
+function gRiskHtml(code, sc) {
+  const a = gRisk(code, sc);
+  if (a.status === "none") return `<div class="note" style="margin:0 0 10px">⚪ Риск FX / ретейка: внеси баллы (и по желанию кредиты и посещаемость) — скажу, хватает ли на допуск и финал.</div>`;
+  let h = `<div class="${a.status === "ok" ? "goodbox" : a.status === "warn" ? "warn soft" : "warn"}" style="margin:0 0 12px"><b>${RICON[a.status]} ${RLABEL[a.status]}</b>`;
+  a.reasons.forEach(t => h += `<div>• ${esc(t)}</div>`);
+  a.tips.forEach(t => h += `<div>ℹ️ ${esc(t)}</div>`);
+  if (a.status === "retake") h += `<div>💸 Ретейк: ${a.retakeCost ? fmt2(a.credits) + " кр. × 20 000 = " + money(a.retakeCost) : "укажи кредиты предмета — посчитаю цену (1 кр. = 20 000 ₸)"}</div>`;
+  if (a.status === "fx") h += `<div>💸 FX-пересдача: ${money(RK.fx)} (оплата минимум за 2 рабочих дня)</div>`;
+  return h + `</div>`;
+}
+const TIERS = [["base", "Базовая", 75, "ни одной оценки ниже B-"], ["high", "Повышенная (+15%)", 90, "только A и A-"]];
+const TICON = { lost: "🔴", risk: "🟡", ontrack: "🟢", secure: "✅", unknown: "⚪" };
+const TLABEL = { lost: "потеряна", risk: "под угрозой", ontrack: "пока на уровне", secure: "выполнено", unknown: "нет данных" };
+function gTotals(code, sc) {
+  const r = gcalc(gActive(code, sc), sc);
+  return { cur: r.cur, best: r.best, pace: r.pace === null ? null : r.pace * 100, all: r.all, graded: r.gradedCp };
+}
+function gSubjectTier(t, need) {
+  if (t.graded <= 0) return "unknown";
+  if (t.best < need) return "lost";
+  if (t.all) return "secure";
+  return t.pace >= need ? "ontrack" : "risk";
+}
+function gScholar() {
+  const subs = state.subjects.filter(s => GR.syllabi[s.code]);
+  return TIERS.map(([key, label, need, rule]) => {
+    const rows = subs.map(s => { const t = gTotals(s.code, (state.grades && state.grades[s.code]) || {}); return { s, t, status: gSubjectTier(t, need) }; });
+    const st = rows.map(r => r.status);
+    const status = !rows.length ? "unknown" : st.includes("lost") ? "lost" : st.includes("unknown") ? "unknown" : st.includes("risk") ? "risk" : st.every(x => x === "secure") ? "secure" : "ontrack";
+    return { key, label, need, rule, status, rows };
+  });
+}
+function gScholarHtml() {
+  const tiers = gScholar();
+  let h = `<div class="sub" style="font-weight:600;margin-top:12px">🎓 Стипендия (по итогам сессии)</div>`;
+  tiers.forEach(t => {
+    h += `<div class="partrow"><span>${TICON[t.status]} ${esc(t.label)}</span><span>${TLABEL[t.status]}</span></div><div class="sub" style="font-size:12px;margin:0 0 4px 24px">${esc(t.rule)} — от ${t.need} баллов в каждом предмете</div>`;
+    t.rows.forEach(r => {
+      const nm = esc(r.s.emoji + " " + r.s.name);
+      if (r.status === "lost") h += `<div class="sub" style="font-size:12px;margin:0 0 2px 24px">• ${nm}: максимум ${fmtInt(r.t.best)} — меньше ${t.need}</div>`;
+      else if (r.status === "risk") h += `<div class="sub" style="font-size:12px;margin:0 0 2px 24px">• ${nm}: сейчас ${fmtInt(r.t.cur)}, в текущем темпе выйдет ${fmtInt(r.t.pace)} — нужно ${t.need}</div>`;
+      else if (r.status === "unknown") h += `<div class="sub" style="font-size:12px;margin:0 0 2px 24px">• ${nm}: нет баллов</div>`;
+    });
+  });
+  const hi = tiers[1].status;
+  h += `<div class="note" style="margin-top:8px">🏅 Президентская: только A и A- за весь период обучения плюс достижения (олимпиады, конференции, общественная работа) — ${hi === "lost" ? "по оценкам этой сессии условие «только A и A-» уже не выполнить" : hi === "secure" ? "оценки сессии подходят" : "пока по оценкам сессии есть шанс"}; остальное приложение проверить не может.</div>`;
+  return h;
+}
+function gpaRiskHtml() {
+  const rows = state.subjects.filter(s => GR.syllabi[s.code]).map(s => ({ s, a: gRisk(s.code, (state.grades && state.grades[s.code]) || {}) }));
+  if (!rows.length) return "";
+  let retake = 0, fxN = 0, unknown = false, worst = 0;
+  rows.forEach(({ a }) => { worst = Math.max(worst, RSEV[a.status]); if (a.status === "retake") { if (a.retakeCost) retake += a.retakeCost; else unknown = true; } if (a.status === "fx") fxN++; });
+  let h = `<h2>Риски и стипендия</h2><div class="card">` + rows.map(({ s, a }) =>
+    `<div class="partrow"><span>${RICON[a.status]} ${esc(s.emoji)} ${esc(s.name)}</span><span>${RLABEL[a.status]}</span></div>` +
+    (RSEV[a.status] ? `<div class="sub" style="font-size:12px;margin:0 0 6px 24px">${esc(a.reasons[0] || "")}</div>` : "")).join("");
+  const costs = [];
+  if (retake) costs.push("ретейк " + money(retake));
+  if (fxN) costs.push("FX " + money(fxN * RK.fx));
+  if (costs.length) h += `<div class="warn" style="margin-top:10px">💸 Если ничего не изменится: ${costs.join(" + ")}${unknown ? " (цена ретейка части предметов неизвестна)" : ""}</div>`;
+  h += gScholarHtml();
+  h += `<div class="note">Расчёт по введённым баллам и правилам гайда (посещаемость > 70%, RegMid и RegEnd > 25%, RegTerm > 50%, финал > 50%) — это не официальный статус. Кредиты и посещаемость вносятся в карточке предмета.</div></div>`;
+  return h;
+}
 
 /* ---------- GPA tools (same maths as gpa.py) ---------- */
 const GPA_KEY = "hw_gpa_v1";
@@ -714,7 +832,7 @@ function gpaRowsHtml() {
       <button class="x" data-act="gpadel" data-i="${i}" aria-label="Убрать">✕</button></div>`).join("");
 }
 function gpaHtml() {
-  let h = `<div class="card"><div class="title">🔄 Конвертер GPA</div>
+  let h = `<div id="gp-risk">${gpaRiskHtml()}</div><div class="card" style="margin-top:12px"><div class="title">🔄 Конвертер GPA</div>
     <input data-gp="conv" inputmode="text" autocomplete="off" placeholder="Балл 0–100 или буква" style="margin-top:8px" value="${esc(gpaS.conv)}">
     <div id="gp-conv" class="gp-res">${gpaConvHtml()}</div></div>`;
   h += `<h2>Семестровый GPA</h2><div class="card"><div class="note" style="margin:0">GPA = Σ(GPA × кредиты) / Σ кредиты. Оценка — баллы 0–100 или буква.</div>
@@ -737,6 +855,7 @@ function gpaHtml() {
 function gpaRefresh() {
   const set = (id, html) => { const e = $(id); if (e) e.innerHTML = html; };
   set("gp-conv", gpaConvHtml()); set("gp-sem", gpaSemHtml()); set("gp-cum", gpaCumHtml()); set("gp-att", gpaAttHtml());
+  const box = $("gp-risk"); if (box && !box.contains(document.activeElement)) box.innerHTML = gpaRiskHtml();
 }
 function gpaFill() {
   const rows = [];
@@ -763,6 +882,13 @@ const VIEWS = { today: renderToday, tasks: renderTasks, cal: renderCal, week: re
 const dirty = new Set(Object.keys(VIEWS));
 function renderView(tab) { if (dirty.has(tab)) { dirty.delete(tab); VIEWS[tab](); } }
 
+function renderVacation() {
+  let el = $("vacation");
+  if (!el) { el = document.createElement("div"); el.id = "vacation"; el.className = "warn soft"; el.style.margin = "0 0 10px"; const m = document.querySelector("main"); m.insertBefore(el, m.firstChild); }
+  const v = state.vacation;
+  el.style.display = v ? "" : "none";
+  if (v) el.textContent = "🏖 Каникулы: бот не присылает уведомления" + (v.end ? " до " + parseDate(v.end).getDate() + " " + MONTHS_GEN[parseDate(v.end).getMonth()] : "") + ".";
+}
 function render() {
   const name = state.user.first_name;
   $("hello").textContent = name ? "Привет, " + name + "!" : "Привет!";
@@ -770,6 +896,7 @@ function render() {
   $("date").textContent = WEEKDAYS[state.weekday] + ", " + d.getDate() + " " + MONTHS_GEN[d.getMonth()];
   if (!ui.calY) { ui.calY = d.getFullYear(); ui.calM = d.getMonth(); ui.calDay = state.today; }
   renderProgress();
+  renderVacation();
   Object.keys(VIEWS).forEach(k => dirty.add(k));
   renderView(ui.tab);
   $("fab").classList.toggle("show", state.can_edit && (ui.tab === "today" || ui.tab === "tasks"));
