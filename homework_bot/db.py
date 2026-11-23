@@ -2,6 +2,7 @@
 migrations, and every read/write query used by the bot."""
 
 import calendar
+import os
 import re
 import sqlite3
 import threading
@@ -73,7 +74,11 @@ def _connect_with_failover():
 # 100-300 ms; the bot used to do it for every single query. Idle connections
 # are now kept and reused. A connection that the server closed in the
 # meantime is detected on first use and replaced transparently.
-_POOL_MAX = 8
+# The Mini App serves each open window from its own thread, and the bot adds
+# its own queries on top: with only 8 spare connections a burst (the whole
+# group opening the app before the first lesson) made the extra requests open
+# brand-new connections (100-300 ms each) and throw them away afterwards.
+_POOL_MAX = int(os.environ.get("DB_POOL_MAX", "16"))
 _pool = []  # [(connection, db_index)]
 _pool_lock = threading.Lock()
 
@@ -162,6 +167,9 @@ def _versions(tables):
         return tuple(_tver.get(t, 0) for t in tables) + (_tver.get("*", 0), _active_db_index)
 
 
+_CACHE_MAX_KEYS = 2000  # per-chat / per-user keys can pile up; start over rather than grow forever
+
+
 def cached_read(key, tables, loader):
     """loader() result, reused until one of `tables` is written."""
     ver = _versions(tables)  # taken BEFORE loading: a write racing the load only causes a harmless reload
@@ -169,6 +177,8 @@ def cached_read(key, tables, loader):
     if hit and hit[0] == ver and time.time() - hit[1] < _CACHE_MAX_AGE:
         return hit[2]
     value = loader()
+    if len(_cache) > _CACHE_MAX_KEYS:
+        _cache.clear()
     _cache[key] = (ver, time.time(), value)
     return value
 
@@ -691,30 +701,36 @@ def get_tasks(chat_id: int, only_undone=True, start=None, end=None, viewer_id=No
     """viewer_id: whose personal "done" marks to apply. Rows come back with
     my_done = 1 if the task is finished for that viewer (their own mark, or
     the legacy global flag); with only_undone=True those rows are left out."""
-    conn = db()
     vid = viewer_id if viewer_id is not None else -1  # -1 never matches a real user
-    q = (
-        "SELECT tasks.*, CASE WHEN tasks.done = 1 OR EXISTS ("
-        "SELECT 1 FROM task_done td WHERE td.task_id = tasks.id AND td.user_id = ?"
-        ") THEN 1 ELSE 0 END AS my_done FROM tasks WHERE chat_id = ?"
-    )
-    params = [vid, chat_id]
-    if only_undone:
-        q += (
-            " AND done = 0 AND NOT EXISTS ("
-            "SELECT 1 FROM task_done td WHERE td.task_id = tasks.id AND td.user_id = ?)"
+
+    def load():
+        conn = db()
+        q = (
+            "SELECT tasks.*, CASE WHEN tasks.done = 1 OR EXISTS ("
+            "SELECT 1 FROM task_done td WHERE td.task_id = tasks.id AND td.user_id = ?"
+            ") THEN 1 ELSE 0 END AS my_done FROM tasks WHERE chat_id = ?"
         )
-        params.append(vid)
-    if start:
-        q += " AND due_date >= ?"
-        params.append(start)
-    if end:
-        q += " AND due_date <= ?"
-        params.append(end)
-    q += " ORDER BY due_date ASC"
-    rows = conn.execute(q, params).fetchall()
-    conn.close()
-    return rows
+        params = [vid, chat_id]
+        if only_undone:
+            q += (
+                " AND done = 0 AND NOT EXISTS ("
+                "SELECT 1 FROM task_done td WHERE td.task_id = tasks.id AND td.user_id = ?)"
+            )
+            params.append(vid)
+        if start:
+            q += " AND due_date >= ?"
+            params.append(start)
+        if end:
+            q += " AND due_date <= ?"
+            params.append(end)
+        q += " ORDER BY due_date ASC"
+        rows = conn.execute(q, params).fetchall()
+        conn.close()
+        return rows
+
+    # Opening the list / the Mini App / a calendar month hits this every time;
+    # it is re-read only after tasks or task_done are written.
+    return list(cached_read(("tasks", chat_id, only_undone, start, end, vid), ("tasks", "task_done"), load))
 
 
 def mark_done(task_id: int, user_id: int):
@@ -807,13 +823,31 @@ def add_task_attachment(task_id: int, file_id: str, kind: str):
     conn.close()
 
 
+def _attachments_by_task() -> dict:
+    """{task_id: [attachment rows]} for ALL tasks, cached until task_attachments
+    changes. Formatting a task list used to cost one query per task."""
+    def load():
+        conn = db()
+        rows = conn.execute("SELECT * FROM task_attachments ORDER BY id ASC").fetchall()
+        conn.close()
+        out = {}
+        for r in rows:
+            out.setdefault(r["task_id"], []).append(r)
+        return out
+    return cached_read("attachments_all", ("task_attachments",), load)
+
+
 def get_task_attachments(task_id: int):
-    conn = db()
-    rows = conn.execute(
-        "SELECT * FROM task_attachments WHERE task_id = ? ORDER BY id ASC", (task_id,)
-    ).fetchall()
-    conn.close()
-    return rows
+    try:
+        task_id = int(task_id)
+    except (TypeError, ValueError):
+        return []
+    return list(_attachments_by_task().get(task_id, ()))
+
+
+def attachment_counts() -> dict:
+    """{task_id: number of attachments} — lets a whole task list be built with no extra queries."""
+    return {t: len(v) for t, v in _attachments_by_task().items()}
 
 
 def clear_task_attachments(task_id: int):
@@ -906,6 +940,14 @@ def get_lms_link(uid: str):
     return row
 
 
+def get_all_lms_links() -> dict:
+    """{uid: row} for every synced LMS event — one query instead of one per event."""
+    conn = db()
+    rows = conn.execute("SELECT * FROM lms_synced").fetchall()
+    conn.close()
+    return {r["uid"]: r for r in rows}
+
+
 def set_lms_link(uid: str, task_id: int, signature: str):
     conn = db()
     conn.execute(
@@ -926,11 +968,21 @@ def reset_task_deadline_notified(task_id: int):
     conn.close()
 
 
+def _task_index() -> dict:
+    def load():
+        conn = db()
+        rows = conn.execute("SELECT * FROM tasks").fetchall()
+        conn.close()
+        return {r["id"]: r for r in rows}
+    return cached_read("tasks_by_id", ("tasks",), load)
+
+
 def get_task(task_id: int):
-    conn = db()
-    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    conn.close()
-    return row
+    try:
+        task_id = int(task_id)
+    except (TypeError, ValueError):
+        return None
+    return _task_index().get(task_id)
 
 
 def get_task_dates_in_month(chat_id: int, year: int, month: int, viewer_id=None):
@@ -983,10 +1035,12 @@ def lessons_starting_at(weekday: int, time_str: str):
 def get_chat_thread(chat_id: int):
     """Topic (message_thread_id) of a forum supergroup where the bot's daily
     messages go, or None for the default (General / ordinary chat)."""
-    conn = db()
-    row = conn.execute("SELECT thread_id FROM chat_threads WHERE chat_id = ?", (chat_id,)).fetchone()
-    conn.close()
-    return row["thread_id"] if row else None
+    def load():
+        conn = db()
+        rows = conn.execute("SELECT chat_id, thread_id FROM chat_threads").fetchall()
+        conn.close()
+        return {r["chat_id"]: r["thread_id"] for r in rows}
+    return cached_read("chat_threads_all", ("chat_threads",), load).get(chat_id)
 
 
 def set_chat_thread(chat_id: int, thread_id):
@@ -1036,18 +1090,12 @@ def add_lesson(chat_id: int, weekday: int, time_str: str, subject: str, room: st
 
 
 def get_lessons(chat_id: int, weekday: int = None):
-    conn = db()
-    if weekday is None:
-        rows = conn.execute(
-            "SELECT * FROM schedule WHERE chat_id = ? ORDER BY weekday ASC, time ASC",
-            (chat_id,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM schedule WHERE chat_id = ? AND weekday = ? ORDER BY time ASC",
-            (chat_id, weekday),
-        ).fetchall()
-    conn.close()
+    # served from the whole-timetable cache (the table is tiny) instead of a query
+    rows = [
+        r for r in _all_lessons()
+        if r["chat_id"] == chat_id and (weekday is None or r["weekday"] == weekday)
+    ]
+    rows.sort(key=lambda r: (r["weekday"], r["time"], r["id"]))
     return rows
 
 
@@ -1069,10 +1117,10 @@ def update_lesson_field(lesson_id: int, field: str, value):
 
 
 def get_lesson(lesson_id: int):
-    conn = db()
-    row = conn.execute("SELECT * FROM schedule WHERE id = ?", (lesson_id,)).fetchone()
-    conn.close()
-    return row
+    for r in _all_lessons():
+        if r["id"] == lesson_id:
+            return r
+    return None
 
 
 def set_room_photo(chat_id: int, room: str, file_id: str, kind: str = "photo"):
@@ -1086,25 +1134,22 @@ def set_room_photo(chat_id: int, room: str, file_id: str, kind: str = "photo"):
     conn.close()
 
 
+def _room_photos() -> dict:
+    """{(chat_id, room): (file_id, kind)} — the whole table, cached."""
+    def load():
+        conn = db()
+        rows = conn.execute("SELECT chat_id, room, file_id, kind FROM room_photos").fetchall()
+        conn.close()
+        return {(r["chat_id"], r["room"]): (r["file_id"], r["kind"]) for r in rows}
+    return cached_read("room_photos_all", ("room_photos",), load)
+
+
 def get_room_photo(chat_id: int, room: str):
-    conn = db()
-    row = conn.execute(
-        "SELECT file_id, kind FROM room_photos WHERE chat_id = ? AND room = ?",
-        (chat_id, room),
-    ).fetchone()
-    conn.close()
-    if not row:
-        return None
-    return row["file_id"], row["kind"]
+    return _room_photos().get((chat_id, room))
 
 
 def list_room_photos(chat_id: int):
-    conn = db()
-    rows = conn.execute(
-        "SELECT room FROM room_photos WHERE chat_id = ? ORDER BY room ASC", (chat_id,)
-    ).fetchall()
-    conn.close()
-    return [r["room"] for r in rows]
+    return sorted(room for (cid, room) in _room_photos() if cid == chat_id)
 
 
 def log_action_and_count(chat_id: int, actor_id: int, target_id: int, action: str) -> int:
@@ -1166,13 +1211,9 @@ def add_reminder(chat_id: int, user_id: int, text: str, repeat: str, time_str: s
 
 
 def get_reminders_for_user(user_id: int):
-    conn = db()
-    rows = conn.execute(
-        "SELECT * FROM reminders WHERE user_id = ? AND enabled = 1 "
-        "ORDER BY COALESCE(remind_date, '9999-99-99') ASC, time ASC",
-        (user_id,),
-    ).fetchall()
-    conn.close()
+    # same rows the per-minute job already keeps cached (enabled ones only)
+    rows = [r for r in get_all_enabled_reminders() if r["user_id"] == user_id]
+    rows.sort(key=lambda r: (r["remind_date"] or "9999-99-99", r["time"]))
     return rows
 
 
@@ -1287,17 +1328,19 @@ def get_birthdays():
     """Birthdays are shared across everyone, like tasks — not scoped to the
     chat they were added from (chat_id is kept only as a record of where
     each one was added, e.g. for /addbirthday's "known users" picker)."""
-    conn = db()
-    rows = conn.execute("SELECT * FROM birthdays ORDER BY month ASC, day ASC").fetchall()
-    conn.close()
-    return rows
+    def load():
+        conn = db()
+        rows = conn.execute("SELECT * FROM birthdays ORDER BY month ASC, day ASC").fetchall()
+        conn.close()
+        return rows
+    return list(cached_read("birthdays_all", ("birthdays",), load))
 
 
 def get_birthday(birthday_id: int):
-    conn = db()
-    row = conn.execute("SELECT * FROM birthdays WHERE id = ?", (birthday_id,)).fetchone()
-    conn.close()
-    return row
+    for r in get_birthdays():
+        if r["id"] == birthday_id:
+            return r
+    return None
 
 
 def delete_birthday(birthday_id: int):
@@ -1470,7 +1513,7 @@ def get_grades(user_id: int) -> dict:
         conn.close()
         return rows
     out = {}
-    for r in load():
+    for r in cached_read(("grades", user_id), ("grades",), load):
         try:
             out[r["subject"]] = json.loads(r["data"])
         except Exception:
@@ -1646,7 +1689,97 @@ def find_user_by_username(username: str):
     return row
 
 
+# --- Permissions ---------------------------------------------------------------
+def all_user_perms() -> dict:
+    """{user_id: {perms}} — the whole (tiny) table, cached. Every command checks
+    a permission, so this used to be a database round trip per message."""
+    def load():
+        conn = db()
+        rows = conn.execute("SELECT user_id, perm FROM user_perms").fetchall()
+        conn.close()
+        out = {}
+        for r in rows:
+            out.setdefault(r["user_id"], set()).add(r["perm"])
+        return out
+    return cached_read("user_perms_all", ("user_perms",), load)
+
+
 # --- Per-group switches (what the bot may send to a group) -------------------
+# --- New semester ---------------------------------------------------------------
+def semester_reset_preview(legacy_codes, today_iso: str, grade_codes) -> dict:
+    """What /newsemester would remove: lessons (and whose they are), tasks of
+    subjects no longer taught, tasks whose date has already passed, and saved
+    scores of the previous trimester."""
+    lessons = _all_lessons()
+    legacy = set(legacy_codes)
+    tasks = list(_task_index().values())
+    grade_codes = set(grade_codes)
+    grades = cached_read("grades_all", ("grades",), lambda: _fetch_all("SELECT user_id, subject FROM grades"))
+    return {
+        "lessons": len(lessons),
+        "people": len({r["chat_id"] for r in lessons}),
+        "old_subject_tasks": sum(1 for t in tasks if t["subject"] in legacy),
+        "past_tasks": sum(1 for t in tasks if t["subject"] not in legacy and t["due_date"] < today_iso),
+        "grades": sum(1 for g in grades if g["subject"] in grade_codes),
+    }
+
+
+def _fetch_all(sql: str):
+    conn = db()
+    rows = conn.execute(sql).fetchall()
+    conn.close()
+    return rows
+
+
+def reset_schedule() -> int:
+    """Deletes every lesson of every person (room photos are kept). Returns how many."""
+    conn = db()
+    cur = conn.execute("DELETE FROM schedule")
+    n = cur.rowcount
+    conn.commit()
+    conn.close()
+    return max(n, 0)
+
+
+def _delete_tasks(where: str, params) -> int:
+    """Deletes the tasks matching `where` together with their attachments and "done" marks."""
+    conn = db()
+    sub = f"SELECT id FROM tasks WHERE {where}"
+    conn.execute(f"DELETE FROM task_done WHERE task_id IN ({sub})", params)
+    conn.execute(f"DELETE FROM task_attachments WHERE task_id IN ({sub})", params)
+    cur = conn.execute(f"DELETE FROM tasks WHERE {where}", params)
+    n = cur.rowcount
+    conn.commit()
+    conn.close()
+    return max(n, 0)
+
+
+def delete_tasks_of_subjects(codes) -> int:
+    """Tasks of the given subjects. Returns how many were removed."""
+    codes = list(codes)
+    if not codes:
+        return 0
+    return _delete_tasks(f"subject IN ({','.join('?' * len(codes))})", codes)
+
+
+def delete_tasks_before(date_iso: str) -> int:
+    """Tasks (any subject) whose due date is before date_iso. Returns how many were removed."""
+    return _delete_tasks("due_date < ?", [date_iso])
+
+
+def delete_grades_of_subjects(codes) -> int:
+    """Saved calculator scores of the given subjects (all people). Returns rows removed."""
+    codes = list(codes)
+    if not codes:
+        return 0
+    conn = db()
+    cur = conn.execute(f"DELETE FROM grades WHERE subject IN ({','.join('?' * len(codes))})", codes)
+    n = cur.rowcount
+    conn.commit()
+    conn.close()
+    return max(n, 0)
+
+
 def _flag_table():
     def load():
         conn = db()
@@ -1695,3 +1828,4 @@ def set_poll_enabled(chat_id: int, on: bool):
     )
     conn.commit()
     conn.close()
+
