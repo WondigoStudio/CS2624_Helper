@@ -13,6 +13,7 @@ SUBJECTS = [
     ("ads", "ADS"),
     ("pe", "Physical Education"),
     ("calc1", "Calculus 1"),
+    ("chn2", "Китайский язык"),
 ]
 # Previous semester. Not offered any more, but kept so that old tasks / saved
 # grades that still carry these codes keep showing a proper name instead of
@@ -30,7 +31,7 @@ ACTIVE_SUBJECT_CODES = frozenset(code for code, _ in SUBJECTS)
 LEGACY_SUBJECT_CODES = frozenset(code for code, _ in LEGACY_SUBJECTS) - ACTIVE_SUBJECT_CODES
 SUBJECT_NAME = dict(LEGACY_SUBJECTS + SUBJECTS)
 SUBJECT_EMOJI = {
-    "ic": "💻", "fl2": "🌍", "hok": "🏛", "ads": "🧮", "pe": "🏃", "calc1": "📐",
+    "ic": "💻", "fl2": "🌍", "hok": "🏛", "ads": "🧮", "pe": "🏃", "calc1": "📐", "chn2": "🇨🇳",
     # previous semester
     "ict": "💻", "itp": "🖥", "psy": "🧠", "soc": "🧑‍🤝‍🧑",
     "dm": "🔢", "flb2": "🌍", "chn": "🇨🇳",
