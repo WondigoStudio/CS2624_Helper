@@ -6,7 +6,10 @@ from datetime import date
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .constants import MONTH_NAMES_RU, SUBJECTS, WEEKDAY_EMOJI, WEEKDAY_NAMES_FULL_RU, WEEKDAY_NAMES_RU
-from .db import display_name, get_overdue_task_dates_in_month, get_task_dates_in_month, list_known_users
+from .db import (
+    display_name, get_overdue_task_dates_in_month, get_task_dates_in_month, is_group_row,
+    list_known_users, list_people,
+)
 from .utils import today_kz
 
 
@@ -54,7 +57,8 @@ def target_user_keyboard(prefix: str):
         [InlineKeyboardButton("Себе", callback_data=f"{prefix}:self")],
         [InlineKeyboardButton("🌐 Всем сразу", callback_data=f"{prefix}:all")],
     ]
-    for u in list_known_users():
+    # people first, then groups (a group can have its own timetable)
+    for u in sorted(list_known_users(), key=is_group_row):
         buttons.append(
             [InlineKeyboardButton(display_name(u), callback_data=f"{prefix}:{u['chat_id']}")]
         )
@@ -63,7 +67,7 @@ def target_user_keyboard(prefix: str):
 
 def birthday_target_keyboard(prefix: str):
     buttons = [[InlineKeyboardButton("Себе", callback_data=f"{prefix}:self")]]
-    for u in list_known_users():
+    for u in list_people():  # a birthday belongs to a person, never to a group chat
         buttons.append(
             [InlineKeyboardButton(display_name(u), callback_data=f"{prefix}:{u['chat_id']}")]
         )
@@ -137,3 +141,4 @@ def calendar_keyboard(chat_id: int, year: int, month: int, viewer_id=None) -> In
     ])
 
     return InlineKeyboardMarkup(rows)
+
