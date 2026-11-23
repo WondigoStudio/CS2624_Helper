@@ -10,11 +10,16 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from ..config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3
-from ..constants import WEEKDAY_EMOJI, WEEKDAY_NAMES_FULL_RU
+from ..constants import LEGACY_SUBJECT_CODES, SUBJECTS, WEEKDAY_EMOJI, WEEKDAY_NAMES_FULL_RU
 from ..activity import describe, flush_now
 from ..db import (
     activity_stats,
+    delete_grades_of_subjects,
+    delete_tasks_before,
+    delete_tasks_of_subjects,
     recent_activity,
+    reset_schedule,
+    semester_reset_preview,
     display_name,
     export_all_tables,
     get_chat_info,
@@ -29,7 +34,7 @@ from ..db import (
 from ..formatting import format_lessons_block
 from ..jobs import send_morning_schedule_for_chat
 from ..permissions import is_admin
-from ..utils import _chunk_text, now_kz
+from ..utils import _chunk_text, now_kz, today_kz
 
 
 async def backupnow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -284,3 +289,108 @@ async def activity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"🧾 {title} ({len(lines)}):\n" + "\n".join(lines)
     for chunk in _chunk_text(text):
         await update.message.reply_text(chunk)
+
+
+# --- /newsemester: start of a new semester -------------------------------------
+# Scores saved for these subjects belong to the previous trimester. "pe" is
+# listed too: the code is reused, so last trimester's PE scores would otherwise
+# show up as this trimester's.
+def _old_grade_codes() -> list:
+    return sorted(LEGACY_SUBJECT_CODES | {"pe"})
+
+
+def _newsemester_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Только расписание", callback_data="nsem:sched")],
+        [InlineKeyboardButton("🗑 Полная очистка прошлого триместра", callback_data="nsem:full")],
+        [InlineKeyboardButton("Отмена", callback_data="nsem:cancel")],
+    ])
+
+
+def _backup_targets(active_index: int) -> list:
+    """[(label, url)] of the backup databases that may be overwritten with a copy
+    of the active one. The database that is currently ACTIVE is never a target:
+    copying a database onto itself would empty it."""
+    out = []
+    for idx, label, url in ((1, "резервная №2", DATABASE_URL_BACKUP2), (2, "резервная №3", DATABASE_URL_BACKUP3)):
+        if url and idx != active_index:
+            out.append((label, url))
+    return out
+
+
+async def _mirror_to_backups() -> list:
+    """Copies the (just cleaned) active database over the backups, like /backupnow.
+    Returns report lines."""
+    status = get_db_status()
+    if not status["using_postgres"]:
+        return []
+    lines = []
+    if status["active_index"] != 0:
+        lines.append("⚠️ Сейчас работает не основная база (сбой основной): очищена активная. "
+                     "Когда основная вернётся, в ней останутся старые данные — очисти её тоже.")
+    for label, url in _backup_targets(status["active_index"]):
+        try:
+            await asyncio.to_thread(init_db, url)
+            ok = await asyncio.to_thread(mirror_active_db_to, url)
+            lines.append(f"✅ {label} обновлена — старых данных там больше нет" if ok else f"⚠️ {label} — пропущено")
+        except Exception as e:
+            lines.append(f"❌ {label} — ошибка: {e} (повтори позже командой /backupnow)")
+    return lines
+
+
+async def newsemester_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin only. Shows what will be deleted and asks for confirmation; nothing
+    is touched until a button is pressed."""
+    register_chat(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда доступна только администраторам бота.")
+        return
+    info = semester_reset_preview(LEGACY_SUBJECT_CODES, today_kz().isoformat(), _old_grade_codes())
+    subjects = ", ".join(name for _, name in SUBJECTS)
+    text = (
+        "🎓 <b>Новый семестр</b>\n\n"
+        f"Предметы сейчас: {html.escape(subjects)}.\n\n"
+        "<b>Что найдено в базе:</b>\n"
+        f"• пар в расписании: <b>{info['lessons']}</b> (у {info['people']} чел.)\n"
+        f"• заданий старых предметов: <b>{info['old_subject_tasks']}</b>\n"
+        f"• других заданий с прошедшей датой: <b>{info['past_tasks']}</b>\n"
+        f"• сохранённых баллов прошлого триместра: <b>{info['grades']}</b>\n\n"
+        "<b>Только расписание</b> — удалит пары у всех.\n"
+        "<b>Полная очистка</b> — расписание + все эти задания и баллы "
+        "(вместе с вложениями и отметками «выполнено»).\n\n"
+        "Фото кабинетов, дни рождения, напоминания и права остаются. Резервные базы "
+        "после очистки обновятся сами. Отменить удаление нельзя — если сомневаешься, "
+        "сначала сделай /exportdb."
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=_newsemester_keyboard())
+
+
+async def newsemester_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not is_admin(q.from_user.id):
+        await q.answer("Только для администраторов бота.", show_alert=True)
+        return
+    action = q.data.split(":", 1)[1]
+    await q.answer()
+    if action == "cancel":
+        await q.edit_message_text("Отменено — ничего не удалено.")
+        return
+    if action not in ("sched", "full"):
+        return
+    await q.edit_message_text("⏳ Очищаю…")
+    lessons = await asyncio.to_thread(reset_schedule)
+    lines = [f"✅ Расписание очищено: удалено пар — {lessons}."]
+    if action == "full":
+        old = await asyncio.to_thread(delete_tasks_of_subjects, sorted(LEGACY_SUBJECT_CODES))
+        past = await asyncio.to_thread(delete_tasks_before, today_kz().isoformat())
+        grades = await asyncio.to_thread(delete_grades_of_subjects, _old_grade_codes())
+        lines.append(f"✅ Удалено заданий: {old + past} (старые предметы — {old}, прошедшие даты — {past}).")
+        lines.append(f"✅ Удалено сохранённых баллов: {grades}.")
+    await q.edit_message_text("\n".join(lines) + "\n\n⏳ Обновляю резервные базы…")
+    backup_lines = await _mirror_to_backups()
+    tail = "\n".join(backup_lines) if backup_lines else "Резервные базы не настроены — обновлять нечего."
+    await q.edit_message_text(
+        "\n".join(lines) + "\n" + tail
+        + "\n\nТеперь можно составлять новое расписание: /schedule_add или вкладка «Неделя» в приложении."
+    )
+
