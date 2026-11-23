@@ -13,8 +13,10 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from .. import gpa as G
+from .. import risk as R
 from ..config import WEBAPP_URL
-from ..db import register_chat
+from ..constants import SUBJECTS
+from ..db import get_grades, register_chat
 
 MODE_TTL = 15 * 60
 
@@ -58,7 +60,8 @@ INSTRUCTION = (
     "📈 <b>Кумулятивный GPA</b> — общий GPA с учётом прошлых семестров.\n"
     "🔄 <b>Конвертер GPA</b> — балл ↔ буква ↔ GPA.\n"
     "🏫 <b>Посещаемость</b> — сколько занятий ещё можно пропустить.\n"
-    "📊 <b>Шкала оценок</b> — таблица баллов, букв и GPA.\n\n"
+    "📊 <b>Шкала оценок</b> — таблица баллов, букв и GPA.\n"
+    "⚠️ <b>Риски: FX и ретейк</b> — по баллам из приложения: хватает ли на допуск и финал, сколько стоят FX/ретейк.\n\n"
     "Формулы:\n"
     "• семестровый GPA = Σ(GPA × кредиты) / Σ кредиты\n"
     "• кумулятивный = (прошлый GPA × прошлые кредиты + семестровый × кредиты семестра) / все кредиты\n\n"
@@ -147,6 +150,37 @@ async def final_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rows:
         text += "\n\nОткрой его в личке с ботом: команда /app."
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows) if rows else None)
+
+
+async def risk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/risk — FX / retake / scholarship check from the scores saved in the Mini App."""
+    register_chat(update)
+    clear_mode(context)
+    uid = update.effective_user.id
+    grades = get_grades(uid)
+    rows = _app_button(update, "grades", "🎯 Внести баллы в приложении")
+    kb = InlineKeyboardMarkup(rows) if rows else None
+    if not any(code in grades for code, _ in SUBJECTS):
+        await update.message.reply_text(
+            "⚠️ <b>Риски: FX и ретейк</b>\n\nЯ считаю риск по баллам, которые ты вносишь в приложении "
+            "(вкладка «Баллы»): оценки за работы, аттестации и финал, а также кредиты и посещаемость предмета. "
+            "Пока баллов нет — нечего проверять." + ("" if rows else "\n\nОткрой приложение в личке: /app."),
+            parse_mode=ParseMode.HTML, reply_markup=kb)
+        return
+    text = R.report(grades, dict(SUBJECTS))
+    for i, chunk in enumerate(_split(text)):
+        await update.message.reply_text(chunk, parse_mode=ParseMode.HTML, reply_markup=kb if i == 0 else None)
+
+
+def _split(text: str, limit: int = 3800):
+    parts, cur = [], ""
+    for block in text.split("\n\n"):
+        if cur and len(cur) + len(block) + 2 > limit:
+            parts.append(cur)
+            cur = block
+        else:
+            cur = f"{cur}\n\n{block}" if cur else block
+    return parts + [cur] if cur else parts
 
 
 def scale_text() -> str:
