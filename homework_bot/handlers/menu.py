@@ -112,6 +112,7 @@ ACTIONS = {
     K.G_CUM: gpa_h.cum_start,
     K.G_CONV: gpa_h.conv_start,
     K.G_ATT: gpa_h.att_start,
+    K.G_RISK: gpa_h.risk_cmd,
     K.G_SCALE: gpa_h.scale_cmd,
     K.G_SYL: syllabus_cmd,
     K.G_HELP: gpa_h.help_cmd,
@@ -140,6 +141,7 @@ def menu_handler() -> MessageHandler:
 
 async def _reset_gpa_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("gpa", None)
+    context.user_data.pop("vac_wait", None)
 
 
 def gpa_reset_handler() -> MessageHandler:
