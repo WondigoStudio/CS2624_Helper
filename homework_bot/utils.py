@@ -1,6 +1,7 @@
 """Small stateless helpers: current time/date, parsing user-typed dates and
 times, and splitting long messages so they fit under Telegram's cap."""
 
+import re
 from datetime import datetime, date, timedelta
 
 from .config import TIMEZONE, SCHEDULE_HOUR, SCHEDULE_MINUTE, REMINDER_HOUR, REMINDER_MINUTE
@@ -143,3 +144,61 @@ def next_birthday_date(day: int, month: int, today: date = None) -> date:
 def _time_minus_minutes(time_str: str, minutes: int) -> str:
     t = datetime.strptime(time_str, "%H:%M")
     return (t - timedelta(minutes=minutes)).strftime("%H:%M")
+
+
+# --- Room codes like "C1.3.234L" -----------------------------------------------------
+# <pavilion>.<building>.<floor digit + two-digit room>[type]:  C1.3.234 = pavilion C1,
+# building 3, floor 2, room 34. The optional last letter is the kind of class:
+# L - лекция, P - практика, K - компьютерный класс. Anything that doesn't look like
+# that (a gym, a free-text name) is shown as typed, with no explanation.
+_ROOM_RE = re.compile(
+    r"^\s*([A-Za-zА-Яа-я]\d*)\s*[.\-]\s*(\d+)\s*[.\-]\s*([1-9])(\d{2})\s*([A-Za-zА-Яа-я])?\s*$"
+)
+# look-alikes typed on a Russian keyboard (and Л for «лекция»)
+_CYR_TO_LAT = {"С": "C", "с": "C", "А": "A", "а": "A", "В": "B", "в": "B", "Е": "E", "е": "E",
+               "Р": "P", "р": "P", "К": "K", "к": "K", "Л": "L", "л": "L"}
+ROOM_KINDS = {"L": "лекция", "P": "практика", "K": "компьютерный класс"}
+
+
+def _latin(text: str) -> str:
+    return "".join(_CYR_TO_LAT.get(ch, ch) for ch in text).upper()
+
+
+def parse_room(room):
+    """(pavilion, building, floor, room number, kind letter or None), or None if it isn't such a code."""
+    m = _ROOM_RE.match(room or "")
+    if not m:
+        return None
+    number = int(m.group(4))
+    kind = _latin(m.group(5)) if m.group(5) else None
+    if number == 0 or (kind is not None and kind not in ROOM_KINDS):
+        return None
+    return _latin(m.group(1)), int(m.group(2)), int(m.group(3)), number, kind
+
+
+def room_base(room) -> str:
+    """The room itself without the class-kind letter, in one canonical spelling — so
+    C1.3.234L and C1.3.234P are the same room (one photo serves both)."""
+    parsed = parse_room(room)
+    if parsed is None:
+        return (room or "").strip()
+    pavilion, building, floor, number, _kind = parsed
+    return f"{pavilion}.{building}.{floor}{number:02d}"
+
+
+def describe_room(room, short: bool = False):
+    """'Павильон C1, 3 корпус, 2 этаж, каб. 34 (лекция)'; short: '3 корп., 2 этаж · лекция'. None if not a code."""
+    parsed = parse_room(room)
+    if parsed is None:
+        return None
+    pavilion, building, floor, number, kind = parsed
+    if short:
+        return f"{building} корп., {floor} этаж" + (f" · {ROOM_KINDS[kind]}" if kind else "")
+    return f"Павильон {pavilion}, {building} корпус, {floor} этаж, каб. {number}" + (f" ({ROOM_KINDS[kind]})" if kind else "")
+
+
+def room_caption(room, suffix: str = "") -> str:
+    """Photo caption: '📍 Кабинет C1.3.234L · Павильон C1, 3 корпус, 2 этаж, каб. 34 (лекция)'."""
+    info = describe_room(room)
+    return f"📍 Кабинет {room}" + (f" · {info}" if info else "") + suffix
+
