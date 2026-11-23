@@ -12,7 +12,9 @@ from ..config import (
     TRANSCRIBE_ENABLED,
     TRANSLATE_ENABLED,
 )
+from ..constants import SUBJECTS
 from ..db import register_chat
+from ..menu_kb import keyboard as menu_keyboard
 from ..states import LESSON_REMINDER_MINUTES
 from ..utils import SCHEDULE_OFFSET_MINUTES, TASKS_OFFSET_MINUTES, _chunk_text
 
@@ -41,8 +43,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Привет! Я помогу не забывать про домашние задания.\n\n"
         "⚠️ Список домашних заданий — общий для всех, кто пишет этому боту: "
         "если кто-то добавит задание, его увидят все, и наоборот.\n\n"
-        "Предметы: ICT, ITP, Psychology, Sociology, Discrete Mathematics, "
-        "(English) Foreign Lang B2, Китайский язык, Физра.\n\n"
+        "Предметы: " + ", ".join(name for _code, name in SUBJECTS) + ".\n\n"
+        "⌨️ Внизу — кнопочное меню: задания, расписание, календарь, оценки и GPA, напоминания — "
+        "без команд (вернуть меню: /menu, скрыть: /hidemenu).\n\n"
         "Команды:\n"
         "/add — добавить задание (можно прикрепить сразу несколько фото/файлов; "
         "длинное описание бот сам структурирует жирным/курсивом)\n"
@@ -57,6 +60,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/weather — погода сейчас (по умолчанию Астана; можно город: /weather Алматы)\n"
         "/app — открыть мини-приложение (задания с формой добавления, календарь, расписание, дни рождения — в одном окне, в личке)\n"
         "/syllabus — силлабусы кратко: схема оценивания, сроки, правила (калькулятор баллов — во вкладке «Баллы» в /app)\n"
+        "/gpa — оценки и GPA: калькулятор семестра, кумулятивный GPA, конвертер балл→GPA, посещаемость (то же — в приложении, «Баллы» → «GPA»)\n"
         "/calendar — календарь месяца кнопками: зелёная — свободный день, "
         "красная — есть задание, синяя — сегодня. Нажми на день — покажу "
         "что на него задано\n\n"
@@ -128,5 +132,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "«обнять», «погладить», «ударить», «поцеловать» и т.п. (всего 30 штук) — "
         "пришлю шуточную сценку с вашими именами. /topactions — топ по чату."
     )
-    for chunk in _chunk_text(text):
-        await update.message.reply_text(chunk)
+    chunks = _chunk_text(text)
+    private = update.effective_chat.type == "private"
+    for i, chunk in enumerate(chunks):
+        # the button menu rides on the last message; groups never get it (it would show for everyone)
+        kb = menu_keyboard("main") if private and i == len(chunks) - 1 else None
+        await update.message.reply_text(chunk, reply_markup=kb)
+
