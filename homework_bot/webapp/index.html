@@ -286,7 +286,7 @@ function lessonCard(l, opts) {
   return `<div class="card ${opts.now ? "now" : ""}"><div class="row" style="${opts.ended ? "opacity:.5" : ""}">
     <div class="time">${esc(l.time)}</div>
     <div class="grow"><div class="title">${esc(l.emoji)} ${esc(l.subject_name)}</div>
-    <div class="sub">каб. ${esc(l.room)}</div></div>
+    <div class="sub">каб. ${esc(l.room)}${l.room_info ? " · " + esc(l.room_info) : ""}</div></div>
     ${opts.del && state.can_schedule ? `<button class="chipbtn danger" data-act="dellesson" data-id="${l.id}" aria-label="Удалить пару">🗑</button>` : ""}
   </div></div>`;
 }
