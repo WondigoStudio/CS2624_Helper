@@ -526,7 +526,7 @@ def init_db(target_url: str = None):
     if "kind" not in room_cols:
         conn.execute("ALTER TABLE room_photos ADD COLUMN kind TEXT NOT NULL DEFAULT 'photo'")
     chat_cols = _existing_columns(conn, "chats")
-    for col in ("username", "first_name", "last_name", "updated_at", "chat_type"):
+    for col in ("username", "first_name", "last_name", "updated_at", "chat_type", "chat_title"):
         if col not in chat_cols:
             conn.execute(f"ALTER TABLE chats ADD COLUMN {col} TEXT")
     if USE_POSTGRES:
@@ -549,6 +549,13 @@ def init_db(target_url: str = None):
             name TEXT NOT NULL
         )
         """
+    )
+    # Groups used to be stored under the name of whoever wrote there last, so several
+    # groups looked like the same person in every picker. Take the real group titles
+    # from the activity log (kept for 30 days) where we already know them.
+    conn.execute(
+        "UPDATE chats SET chat_title = (SELECT a.chat_title FROM activity_log a WHERE a.chat_id = chats.chat_id "
+        "AND a.chat_title IS NOT NULL ORDER BY a.id DESC LIMIT 1) WHERE chat_id < 0 AND chat_title IS NULL"
     )
     conn.execute(
         f"""
@@ -637,7 +644,8 @@ def register_chat(update: Update):
     # Almost every command calls this. Writing the same row to the database on
     # each message is pure overhead, so repeat writes within a few minutes are skipped
     # (a changed name or chat type is written immediately).
-    signature = (username, first_name, last_name, chat_type)
+    title = update.effective_chat.title if chat_type != "private" else None
+    signature = (username, first_name, last_name, chat_type, title)
     seen = _chat_seen.get(chat_id)
     if seen and seen[0] == signature and time.monotonic() - seen[1] < _CHAT_REFRESH_SECONDS:
         return
@@ -645,16 +653,17 @@ def register_chat(update: Update):
     conn = db()
     conn.execute(
         """
-        INSERT INTO chats (chat_id, username, first_name, last_name, updated_at, chat_type)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO chats (chat_id, username, first_name, last_name, updated_at, chat_type, chat_title)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(chat_id) DO UPDATE SET
             username = excluded.username,
             first_name = excluded.first_name,
             last_name = excluded.last_name,
             updated_at = excluded.updated_at,
-            chat_type = excluded.chat_type
+            chat_type = excluded.chat_type,
+            chat_title = excluded.chat_title
         """,
-        (chat_id, username, first_name, last_name, now_kz().isoformat(), chat_type),
+        (chat_id, username, first_name, last_name, now_kz().isoformat(), chat_type, title),
     )
     conn.commit()
     conn.close()
@@ -1066,7 +1075,20 @@ def list_known_users():
     return cached_read("chats_all", ("chats",), load)
 
 
+def _col(row, key):
+    return row[key] if key in row.keys() else None
+
+
+def is_group_row(row) -> bool:
+    return row["chat_id"] < 0  # Telegram: groups/channels have negative ids, people positive
+
+
 def display_name(row) -> str:
+    if is_group_row(row):
+        # a group row holds the name of whoever wrote there last — showing that as the
+        # label made every group look like a person (and the same person many times)
+        title = _col(row, "chat_title")
+        return f"👥 {title}" if title else f"👥 Группа (id{row['chat_id']})"
     name = " ".join(p for p in (row["first_name"], row["last_name"]) if p)
     username = f"@{row['username']}" if row["username"] else None
     if name and username:
@@ -1076,6 +1098,11 @@ def display_name(row) -> str:
     if username:
         return username
     return f"id{row['chat_id']}"
+
+
+def list_people():
+    """Known private chats only (real people), without groups."""
+    return [r for r in list_known_users() if not is_group_row(r)]
 
 
 def add_lesson(chat_id: int, weekday: int, time_str: str, subject: str, room: str):
