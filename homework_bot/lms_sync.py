@@ -44,6 +44,8 @@ _SUBJECT_KEYWORDS = [
     ("algorithms and data structures", "ads"),
     ("data structures", "ads"),
     ("calculus", "calc1"),
+    ("chinese", "chn2"),
+    ("китайск", "chn2"),
     ("physical education", "pe"),
     ("introduction to computing", "ic"),
     ("information and communication", "ic"),
