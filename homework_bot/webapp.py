@@ -24,6 +24,7 @@ import html
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -31,9 +32,10 @@ from urllib.parse import parse_qsl
 
 from .ai_format import STRUCTURE_MIN_LENGTH, _sanitize_telegram_html, _structure_with_groq
 from .config import BOT_TOKEN, GROQ_API_KEY, SHARED_TASKS_ID, logger, requests
-from .constants import SUBJECT_EMOJI, SUBJECT_NAME, SUBJECTS
+from .constants import ACTIVE_SUBJECT_CODES, SUBJECT_EMOJI, SUBJECT_NAME, SUBJECTS
 from .syllabi import SCALE, SYLLABI, valid_scores
 from .db import (
+    attachment_counts,
     get_grades,
     save_grades,
     add_birthday,
@@ -110,7 +112,9 @@ def _plain(text: str, is_html: bool) -> str:
     return html.unescape(_TAG_RE.sub("", text)) if is_html else text
 
 
-def _task_json(row) -> dict:
+def _task_json(row, att_counts=None) -> dict:
+    if att_counts is None:
+        att_counts = attachment_counts()
     return {
         "id": row["id"],
         "subject": row["subject"],
@@ -121,7 +125,7 @@ def _task_json(row) -> dict:
         "due_date": row["due_date"],
         "due_time": row["due_time"] or "",
         "overdue": is_task_overdue(row),
-        "attachments": len(get_task_attachments(row["id"])),
+        "attachments": att_counts.get(row["id"], 0),
         "created_by": row["created_by"] or "",
     }
 
@@ -136,6 +140,7 @@ def build_state(user: dict) -> dict:
     finished = [r for r in all_rows if r["my_done"] and not r["done"]]
     finished.sort(key=lambda r: r["due_date"], reverse=True)
 
+    att_counts = attachment_counts()  # one lookup for the whole list (used to be one query per task)
     lessons = [
         {
             "id": r["id"],
@@ -173,8 +178,8 @@ def build_state(user: dict) -> dict:
         "weekday": today.weekday(),
         "now": now_kz().strftime("%H:%M"),
         "subjects": [{"code": c, "name": n, "emoji": SUBJECT_EMOJI.get(c, "📘")} for c, n in SUBJECTS],
-        "tasks": [_task_json(r) for r in todo],
-        "done_tasks": [_task_json(r) for r in finished[:40]],
+        "tasks": [_task_json(r, att_counts) for r in todo],
+        "done_tasks": [_task_json(r, att_counts) for r in finished[:40]],
         "lessons": lessons,
         "birthdays": birthdays,
         "stats": {"done": len(finished), "todo": len(todo)},
@@ -243,23 +248,41 @@ def _clean_time(value) -> str:
     return t
 
 
-def _clean_subject(value) -> str:
-    if value not in SUBJECT_NAME:
+def _clean_subject(value, keep=None) -> str:
+    """Only this semester's subjects are accepted. `keep` is the subject an
+    existing task already has: it may stay as is even if it is from a past
+    semester (so editing the title of an old task doesn't fail)."""
+    if value not in ACTIVE_SUBJECT_CODES and not (keep is not None and value == keep and value in SUBJECT_NAME):
         raise ApiError(400, "bad_subject")
     return value
 
 
-def _description_for_storage(text: str):
-    """(text, is_html): long descriptions get structured by the same Groq
-    helper the chat flow uses, falling back silently to plain text."""
-    if GROQ_API_KEY and len(text) >= STRUCTURE_MIN_LENGTH:
-        try:
-            structured = _structure_with_groq(text)
-            if structured:
-                return _sanitize_telegram_html(structured), True
-        except Exception as e:
-            logger.warning("Mini App description structuring failed: %s", e)
-    return text, False
+# Structuring a long description is a Groq call that can take many seconds.
+# It used to run inside the request, so "add task" / "save" hung on the spinner
+# until it finished. Now the plain text is saved at once and the nicer
+# bold/bullets version replaces it a moment later (the Mini App itself shows
+# plain text either way; the formatting is only for the bot's chat messages).
+_background = ThreadPoolExecutor(max_workers=2, thread_name_prefix="webapp-bg")
+
+
+def _structure_in_background(task_id: int, text: str):
+    try:
+        structured = _structure_with_groq(text)
+        if not structured:
+            return
+        task = get_task(task_id)
+        # the person may have edited the text again while Groq was thinking
+        if task and task["description"] == text and not task["description_html"]:
+            update_task_description(task_id, _sanitize_telegram_html(structured), True)
+    except Exception as e:
+        logger.warning("Mini App description structuring failed: %s", e)
+
+
+def _maybe_structure_later(task_id: int, text: str) -> bool:
+    if GROQ_API_KEY and text and len(text) >= STRUCTURE_MIN_LENGTH:
+        _background.submit(_structure_in_background, task_id, text)
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -290,13 +313,13 @@ def act_task_add(user, body):
     description = _clean_text(body.get("description"), 3500)
     due_date = _clean_date(body.get("due_date"))
     due_time = _clean_time(body.get("due_time"))
-    text, is_html = _description_for_storage(description) if description else ("", False)
     task_id = add_task(
         SHARED_TASKS_ID, subject, title, due_date, due_time or None,
         created_by=user.get("first_name") or str(user["id"]),
-        description=text or None, description_html=is_html,
+        description=description or None, description_html=False,
     )
-    return {"ok": True, "id": task_id, "structured": is_html}
+    structuring = _maybe_structure_later(task_id, description)
+    return {"ok": True, "id": task_id, "structured": False, "structuring": structuring}
 
 
 def act_task_edit(user, body):
@@ -308,7 +331,7 @@ def act_task_edit(user, body):
         raise ApiError(400, "bad_request")
     deadline_changed = False
     if "subject" in fields:
-        update_task_field(task_id, "subject", _clean_subject(fields["subject"]))
+        update_task_field(task_id, "subject", _clean_subject(fields["subject"], keep=task["subject"]))
     if "title" in fields:
         update_task_field(task_id, "title", _clean_text(fields["title"], 200, required=True))
     if "due_date" in fields:
@@ -321,8 +344,8 @@ def act_task_edit(user, body):
         new_desc = _clean_text(fields["description"], 3500)
         old_plain = _plain(task["description"], bool(task["description_html"]))
         if new_desc != old_plain:  # untouched text keeps its bold/italic structure
-            text, is_html = _description_for_storage(new_desc) if new_desc else ("", False)
-            update_task_description(task_id, text or None, is_html)
+            update_task_description(task_id, new_desc or None, False)
+            _maybe_structure_later(task_id, new_desc)
     if deadline_changed:
         reset_task_deadline_notified(task_id)
     return {"ok": True}
@@ -605,7 +628,15 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(500, {"error": "server_error"})
 
 
+class _Server(ThreadingHTTPServer):
+    # The default listen queue is 5: when a whole group opens the app at once
+    # (before the first lesson) the extra connections were refused/retried, which
+    # looked like the app "hanging". 128 lets them all wait their turn.
+    request_queue_size = 128
+
+
 def make_server(port: int) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer(("0.0.0.0", port), _Handler)
+    server = _Server(("0.0.0.0", port), _Handler)
     server.daemon_threads = True
     return server
+
