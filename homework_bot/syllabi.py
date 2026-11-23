@@ -218,6 +218,42 @@ SYLLABI = {
     },
 }
 
+def _generic(title, credits=None):
+    """Standard university scheme for a course whose syllabus isn't entered yet.
+    The split of points inside an attestation is a placeholder: replace this
+    call with a full entry (like "ict" above) once the real syllabus is known."""
+    return {
+        "title": title,
+        "credits": credits,
+        "weights": _STD_WEIGHTS,
+        "final": {"l": "Final", "outof": 100},
+        "min_att": None,
+        "generic": True,
+        "note": "Силлабус этого предмета ещё не внесён — стандартная схема университета 30% + 30% + 40%. "
+                "Распределение баллов внутри аттестации условное: поправь под свои критерии.",
+        "atts": [
+            {"name": "1-я аттестация", "reg": [_c("r1", "Текущие работы", 60)],
+             "exam": [_c("m", "Midterm", 40)]},
+            {"name": "2-я аттестация", "reg": [_c("r2", "Текущие работы", 60)],
+             "exam": [_c("e", "Endterm", 40)]},
+        ],
+        "facts": [
+            "Общие правила университета: пропуски не больше 30% занятий.",
+        ],
+    }
+
+
+# Second semester. (The first-semester entries above — ict, itp, psy, soc, dm,
+# flb2, chn — are no longer offered, but stay here so already saved scores remain valid.)
+SYLLABI.update({
+    "ic": _generic("IC"),
+    "fl2": _generic("Foreign Language 2"),
+    "hok": _generic("History of Kazakhstan"),
+    "ads": _generic("Algorithms and Data Structures (ADS)"),
+    "calc1": _generic("Calculus 1"),
+})
+
+
 # Letter scale (same in all syllabi; FX/F boundary differs for PE).
 SCALE = [(95, "A", 4.0), (90, "A-", 3.67), (85, "B+", 3.33), (80, "B", 3.0), (75, "B-", 2.67),
          (70, "C+", 2.33), (65, "C", 2.0), (60, "C-", 1.67), (55, "D+", 1.33), (50, "D", 1.0)]
@@ -280,3 +316,4 @@ def card_text(code: str) -> str:
     lines.extend("• " + e(f) for f in sy["facts"])
     lines.append("\n🎓 Посчитать баллы и прогноз — вкладка «Баллы» в приложении (/app).")
     return "\n".join(lines)
+
