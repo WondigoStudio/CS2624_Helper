@@ -63,7 +63,7 @@ from .db import (
     update_task_field,
 )
 from .permissions import can, is_admin
-from .utils import describe_room, is_task_overdue, next_birthday_date, now_kz, parse_due_time, today_kz
+from .utils import describe_room, is_task_overdue, long_break, next_birthday_date, now_kz, parse_due_time, today_kz
 
 _INDEX_PATH = Path(__file__).parent / "webapp" / "index.html"
 _MAX_BODY = 64 * 1024
@@ -154,6 +154,12 @@ def build_state(user: dict) -> dict:
         }
         for r in get_lessons(uid)  # in a private chat chat_id == user id
     ]
+    # a long break after a lesson (to the next lesson of the same day), shown by the app as a ☕ row
+    own = get_lessons(uid)
+    for i, item in enumerate(lessons):
+        nxt = own[i + 1] if i + 1 < len(own) and own[i + 1]["weekday"] == own[i]["weekday"] else None
+        gap = long_break(own[i], nxt) if nxt else None
+        item["break_after"] = {"from": gap[0], "to": gap[1], "text": gap[2]} if gap else None
     birthdays = []
     admin = is_admin(uid)
     for r in get_birthdays():
