@@ -586,6 +586,7 @@ def init_db(target_url: str = None):
     )
     if "morning_off" not in _existing_columns(conn, "group_settings"):
         conn.execute("ALTER TABLE group_settings ADD COLUMN morning_off INTEGER NOT NULL DEFAULT 0")
+    conn.execute("CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS group_flags (chat_id BIGINT NOT NULL, flag TEXT NOT NULL, "
         "value INTEGER NOT NULL, PRIMARY KEY (chat_id, flag))"
@@ -1396,7 +1397,7 @@ def delete_birthday(birthday_id: int):
 _MIRROR_TABLES = [
     "tasks", "task_attachments", "task_done", "lms_synced", "lms_feeds", "chats", "schedule", "room_photos", "actions",
     "schedule_allowed_users", "user_perms", "report_settings", "group_members", "report_chats",
-    "reminders", "birthdays", "chat_threads", "grades", "anon_messages", "anon_blocks", "anon_optout", "group_settings", "group_roles", "group_flags",
+    "reminders", "birthdays", "chat_threads", "grades", "anon_messages", "anon_blocks", "anon_optout", "group_settings", "group_roles", "group_flags", "bot_settings",
 ]
 
 
@@ -1569,6 +1570,32 @@ def save_grades(user_id: int, subject: str, scores: dict):
             "INSERT INTO grades (user_id, subject, data, updated_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(user_id, subject) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
             (user_id, subject, json.dumps(scores, ensure_ascii=False), now_kz().isoformat()),
+        )
+    conn.commit()
+    conn.close()
+
+
+# --- Bot-wide settings (key/value) ------------------------------------------
+def get_setting(key: str, default=None):
+    def load():
+        conn = db()
+        row = conn.execute("SELECT value FROM bot_settings WHERE key = ?", (key,)).fetchone()
+        conn.close()
+        return row["value"] if row else None
+    value = cached_read(("setting", key), ("bot_settings",), load)
+    return default if value is None else value
+
+
+def set_setting(key: str, value):
+    """value=None deletes the key."""
+    conn = db()
+    if value is None:
+        conn.execute("DELETE FROM bot_settings WHERE key = ?", (key,))
+    else:
+        conn.execute(
+            "INSERT INTO bot_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
         )
     conn.commit()
     conn.close()
