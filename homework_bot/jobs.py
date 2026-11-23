@@ -42,6 +42,7 @@ from .db import (
 from .formatting import format_lessons_block, format_task_line
 from .states import LESSON_REMINDER_MINUTES
 from .utils import (
+    continues_previous,
     describe_room,
     room_base,
     room_caption,
@@ -477,6 +478,10 @@ async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
     for r in rows:
         chat_id = r["chat_id"]
         if chat_id in muted:
+            continue
+        # The same subject in the same room right after the previous lesson (a double
+        # lesson): the person is already there, a "10 minutes left" ping would only be noise.
+        if any(continues_previous(p, r, LESSON_REMINDER_MINUTES) for p in get_lessons(chat_id, r["weekday"])):
             continue
         info = describe_room(r["room"])
         text = (
