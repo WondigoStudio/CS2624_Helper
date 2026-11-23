@@ -60,6 +60,7 @@ G_ATT = "🏫 Посещаемость"
 G_SCALE = "📊 Шкала оценок"
 G_SYL = "📋 Силлабусы"
 G_HELP = "📖 Инструкция"
+G_RISK = "⚠️ Риски: FX и ретейк"
 
 # labels that open a ConversationHandler (they are its entry points, see main.py)
 CONVERSATION_LABELS = (T_ADD, T_EDIT, T_LMS, S_ADD, S_EDIT, R_ADD, B_ADD, B_IMPORT)
@@ -71,7 +72,7 @@ _ROWS = {
     "schedule": [[S_TODAY, S_WEEK], [S_DAY, S_ADD], [S_EDIT, S_DELETE], [S_PHOTOS, S_COPY], [BACK]],
     "reminders": [[R_ADD, R_LIST], [BACK]],
     "birthdays": [[B_ADD, B_NEXT], [B_ALL, B_IMPORT], [BACK]],
-    "grades": [[G_FINAL, G_CALC], [G_CUM, G_CONV], [G_ATT, G_SCALE], [G_SYL, G_HELP], [BACK]],
+    "grades": [[G_FINAL, G_CALC], [G_CUM, G_CONV], [G_ATT, G_RISK], [G_SCALE, G_SYL], [G_HELP, BACK]],
 }
 
 
