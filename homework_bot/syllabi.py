@@ -251,6 +251,7 @@ SYLLABI.update({
     "hok": _generic("History of Kazakhstan"),
     "ads": _generic("Algorithms and Data Structures (ADS)"),
     "calc1": _generic("Calculus 1"),
+    "chn2": _generic("Китайский язык"),
 })
 
 
