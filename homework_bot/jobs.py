@@ -10,6 +10,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
+from . import vacation
 from .config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3, SHARED_TASKS_ID, logger
 from .constants import SUBJECT_NAME, WEEKDAY_NAMES_FULL_RU
 from .handlers.weather import morning_weather_text
@@ -68,6 +69,8 @@ def _topic(chat_id: int) -> dict:
 
 
 async def send_morning_poll_job(context: ContextTypes.DEFAULT_TYPE):
+    if vacation.silent():  # vacation mode: the bot stays quiet
+        return
     # 1. Сначала подготавливаем данные из базы
     conn = db()
     conn.row_factory = sqlite3.Row
@@ -193,6 +196,8 @@ async def check_adaptive_schedule(context: ContextTypes.DEFAULT_TYPE):
     photos) once, at the moment that matches its target send time — fixed
     07:30 for groups, or SCHEDULE_OFFSET_MINUTES before that person's first
     lesson today for a private chat with a schedule."""
+    if vacation.silent():  # vacation mode: the bot stays quiet
+        return
     weekday = now_kz().weekday()
     due = await asyncio.to_thread(_chats_due_now, SCHEDULE_OFFSET_MINUTES, DEFAULT_SCHEDULE_TIME)
     no_schedule = await asyncio.to_thread(chats_with_flag_off, "schedule")
@@ -234,6 +239,8 @@ async def check_adaptive_tasks(context: ContextTypes.DEFAULT_TYPE):
     once, at the moment that matches its target send time — fixed 08:00 for
     groups, or TASKS_OFFSET_MINUTES before that person's first lesson today
     for a private chat with a schedule."""
+    if vacation.silent():  # vacation mode: the bot stays quiet
+        return
     due = await asyncio.to_thread(_chats_due_now, TASKS_OFFSET_MINUTES, DEFAULT_TASKS_TIME, "tasks")
     if not due:
         return
@@ -313,6 +320,8 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
        actively said "not yet" or just never answered, the bot keeps
        reminding every 5 minutes either way, until "✅ Подтверждаю" is
        tapped (or the reminder is snoozed/deleted)."""
+    if vacation.silent(personal=True):  # vacation mode (only if the admin also silenced personal reminders)
+        return
     now = now_kz()
     now_str = now.strftime("%H:%M")
     today_iso = now.date().isoformat()
@@ -409,8 +418,9 @@ async def sync_lms_job(context: ContextTypes.DEFAULT_TYPE):
     if not feeds:
         return
     results = await asyncio.to_thread(sync_all_feeds)
+    quiet = vacation.silent()  # still syncing, but no "your link broke" messages while the bot is silent
     for user_id, report, error in results:
-        if error is None:
+        if error is None or quiet:
             continue
         if not feeds[user_id]["error_notified"]:
             try:
@@ -435,6 +445,8 @@ async def check_task_deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
     exact minute (host spin-down, scheduler misfire) still catches it late
     instead of silently skipping it, same reasoning as check_reminders.
     deadline_notified guards against sending it more than once."""
+    if vacation.silent():  # vacation mode: the bot stays quiet
+        return
     now = now_kz()
     rows = await asyncio.to_thread(pending_deadline_tasks, SHARED_TASKS_ID)
     for row in rows:
@@ -470,6 +482,8 @@ async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
     Minute-granularity matching means each lesson fires once, at the minute
     that lines up — no separate dedupe bookkeeping needed. One query for all
     chats; nothing else is touched on the minutes when nothing is due."""
+    if vacation.silent():  # vacation mode: the bot stays quiet
+        return
     now = now_kz()
     target_time = (now + timedelta(minutes=LESSON_REMINDER_MINUTES)).strftime("%H:%M")
     rows = await asyncio.to_thread(lessons_starting_at, now.weekday(), target_time)
