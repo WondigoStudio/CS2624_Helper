@@ -10,6 +10,7 @@ from ..db import all_chat_ids, get_room_photo, list_room_photos, register_chat, 
 from ..keyboards import target_user_keyboard
 from ..permissions import is_admin
 from ..states import PHOTO_ROOM_NAME, PHOTO_TARGET_USER, PHOTO_WAITING
+from ..utils import room_caption
 
 
 async def addroomphoto_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -140,8 +141,9 @@ async def testphoto_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     file_id, kind = photo
     if kind == "document":
-        await query.message.reply_document(document=file_id, caption=f"Кабинет {room} (тест)")
+        await query.message.reply_document(document=file_id, caption=room_caption(room, " (тест)"))
     else:
-        await query.message.reply_photo(photo=file_id, caption=f"Кабинет {room} (тест)")
+        await query.message.reply_photo(photo=file_id, caption=room_caption(room, " (тест)"))
+
 
 
