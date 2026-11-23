@@ -34,7 +34,7 @@ from ..states import (
     SCH_TIME,
     SCH_WEEKDAY,
 )
-from ..utils import parse_due_time, reply_text_chunked, now_kz
+from ..utils import describe_room, parse_due_time, reply_text_chunked, now_kz, room_base, room_caption
 
 
 async def schedule_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,9 +202,11 @@ async def schedule_room_typed(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await update.message.reply_text(
         f"Добавлено ✅ {who_line}\n{WEEKDAY_NAMES_FULL_RU[weekday]}, {time_str} — "
-        f"[{SUBJECT_NAME[subject]}], каб. {room}\n\n"
-        f"Если хочешь, чтобы бот присылал фото/карту этого кабинета по утрам — "
-        f"пришли его через /addroomphoto."
+        f"[{SUBJECT_NAME[subject]}], каб. {room}"
+        + (f"\n📍 {describe_room(room)}" if describe_room(room) else "")
+        + "\n\n"
+        "Если хочешь, чтобы бот присылал фото/карту этого кабинета по утрам — "
+        "пришли его через /addroomphoto."
     )
     return ConversationHandler.END
 
@@ -454,8 +456,9 @@ async def schedule_day_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     seen_rooms = []
     for r in rows:
-        if r["room"] not in seen_rooms:
-            seen_rooms.append(r["room"])
+        base = room_base(r["room"])  # lecture and practice in one room -> one photo
+        if base not in seen_rooms:
+            seen_rooms.append(base)
 
     sent_any_photo = False
     for room in seen_rooms:
@@ -464,7 +467,7 @@ async def schedule_day_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE
             continue
         file_id, kind = photo
         sent_any_photo = True
-        caption = f"📍 Кабинет {room}"
+        caption = room_caption(room)
         if kind == "document":
             await query.message.reply_document(document=file_id, caption=caption)
         else:
@@ -603,3 +606,4 @@ async def copyschedule_go(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photos += 1
     tail = "Поправить — /editschedule." if dst == here else "Человек увидит его в своём /schedule_week; править может он сам или админ."
     await q.edit_message_text(f"✅ Скопировано пар: {added}, фото кабинетов: {photos} → {_chat_label(dst, here)}.\n{tail}")
+
