@@ -85,7 +85,8 @@ from .states import (
 from . import menu_kb as K
 from .menu_kb import MENU_TEXT, entry as menu_entry
 from .handlers.start import app_cmd, start
-from .handlers.gpa import gpa_callback, gpa_text
+from .handlers.vacation import vacation_callback, vacation_cmd, vacation_text
+from .handlers.gpa import gpa_callback, gpa_text, risk_cmd
 from .handlers.menu import gpa_reset_handler, gpa_section_cmd, hide_menu, menu_cmd, menu_handler
 from .handlers.weather import weather_cmd
 from .handlers.lms import lms_cancel, lms_file_received, lms_start, lms_url_typed, lmsoff_cmd, lmssync_cmd
@@ -450,6 +451,7 @@ def main():
     app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("hidemenu", hide_menu))
     app.add_handler(CommandHandler("gpa", gpa_section_cmd))
+    app.add_handler(CommandHandler("risk", risk_cmd))
     app.add_handler(CommandHandler("app", app_cmd))
     app.add_handler(CommandHandler("weather", weather_cmd))
     app.add_handler(add_conv)
@@ -501,6 +503,9 @@ def main():
     app.add_handler(CommandHandler("roomphotos", roomphotos_cmd))
     app.add_handler(CommandHandler("users", users_cmd))
     app.add_handler(CommandHandler("dbstatus", dbstatus_cmd))
+    app.add_handler(CommandHandler("vacation", vacation_cmd))
+    app.add_handler(CallbackQueryHandler(vacation_callback, pattern="^vac:"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~MENU_TEXT & filters.ChatType.PRIVATE, vacation_text), group=3)
     app.add_handler(CommandHandler("newsemester", newsemester_cmd))
     app.add_handler(CallbackQueryHandler(newsemester_callback, pattern="^nsem:"))
     app.add_handler(lms_conv)
