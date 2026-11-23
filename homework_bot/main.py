@@ -180,6 +180,8 @@ from .handlers.admin import (
     dbstatus_cmd,
     exportdb_cmd,
     lmsusers_cmd,
+    newsemester_callback,
+    newsemester_cmd,
     testmorning_cmd,
     users_cmd,
     viewschedule_chosen,
@@ -476,6 +478,8 @@ def main():
     app.add_handler(CommandHandler("roomphotos", roomphotos_cmd))
     app.add_handler(CommandHandler("users", users_cmd))
     app.add_handler(CommandHandler("dbstatus", dbstatus_cmd))
+    app.add_handler(CommandHandler("newsemester", newsemester_cmd))
+    app.add_handler(CallbackQueryHandler(newsemester_callback, pattern="^nsem:"))
     app.add_handler(lms_conv)
     app.add_handler(CommandHandler("lmsoff", lmsoff_cmd))
     app.add_handler(CommandHandler("lmssync", lmssync_cmd))
@@ -615,3 +619,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
