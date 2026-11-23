@@ -9,7 +9,7 @@ from telegram import Update
 from .ai_format import strip_html_preview
 from .constants import MONTH_NAMES_RU, SUBJECT_EMOJI, SUBJECT_NAME, WEEKDAY_NAMES_RU
 from .db import get_task_attachments, get_tasks
-from .utils import is_task_overdue, next_birthday_date, today_kz
+from .utils import describe_room, is_task_overdue, next_birthday_date, today_kz
 
 
 def format_task_line(row) -> str:
@@ -101,7 +101,9 @@ def format_lesson_line(row) -> str:
     emoji = SUBJECT_EMOJI.get(row["subject"], "📘")
     subject = html.escape(SUBJECT_NAME[row["subject"]])
     room = html.escape(row["room"])
-    return f"{emoji} <b>{row['time']}</b> — <b>{subject}</b> · каб. <code>{room}</code>"
+    hint = describe_room(row["room"], short=True)
+    hint_part = f" <i>({hint})</i>" if hint else ""
+    return f"{emoji} <b>{row['time']}</b> — <b>{subject}</b> · каб. <code>{room}</code>{hint_part}"
 
 
 def format_lessons_block(rows, heading: str) -> str:
@@ -109,3 +111,4 @@ def format_lessons_block(rows, heading: str) -> str:
     for i, r in enumerate(rows, start=1):
         lines.append(f"{i}. {format_lesson_line(r)}")
     return "\n".join(lines)
+
