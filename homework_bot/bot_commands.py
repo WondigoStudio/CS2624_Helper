@@ -7,6 +7,9 @@ from telegram import BotCommand, BotCommandScopeChat
 # (command, description <= 256 chars, shown to everyone)
 _USER = [
     ("start", "Начать работу с ботом, список команд"),
+    ("menu", "Кнопочное меню (задания, расписание, оценки и GPA…)"),
+    ("gpa", "Оценки и GPA: калькулятор, конвертер, посещаемость"),
+    ("hidemenu", "Скрыть кнопочное меню"),
     ("app", "Открыть мини-приложение"),
     ("today", "Задания на сегодня"),
     ("week", "Задания на эту неделю"),
