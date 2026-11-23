@@ -42,6 +42,9 @@ from .db import (
 from .formatting import format_lessons_block, format_task_line
 from .states import LESSON_REMINDER_MINUTES
 from .utils import (
+    describe_room,
+    room_base,
+    room_caption,
     DEFAULT_SCHEDULE_TIME,
     DEFAULT_TASKS_TIME,
     SCHEDULE_OFFSET_MINUTES,
@@ -258,15 +261,16 @@ async def send_morning_schedule_for_chat(bot, chat_id: int, weekday: int = None)
 
     seen_rooms = []
     for r in rows:
-        if r["room"] not in seen_rooms:
-            seen_rooms.append(r["room"])
+        base = room_base(r["room"])  # lecture and practice in one room -> one photo
+        if base not in seen_rooms:
+            seen_rooms.append(base)
 
     for room in seen_rooms:
         photo = get_room_photo(chat_id, room)
         if not photo:
             continue
         file_id, kind = photo
-        caption = f"📍 Кабинет {room}"
+        caption = room_caption(room)
         if kind == "document":
             await bot.send_document(chat_id=chat_id, **_topic(chat_id), document=file_id, caption=caption)
         else:
@@ -474,9 +478,11 @@ async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
         chat_id = r["chat_id"]
         if chat_id in muted:
             continue
+        info = describe_room(r["room"])
         text = (
             f"⏰ Через {LESSON_REMINDER_MINUTES} минут: "
             f"[{SUBJECT_NAME[r['subject']]}] в {r['time']}, каб. {r['room']}"
+            + (f"\n📍 {info}" if info else "")
         )
         try:
             await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=text)
@@ -489,10 +495,11 @@ async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
             continue
         file_id, kind = photo
         try:
-            caption = f"📍 Кабинет {r['room']}"
+            caption = room_caption(r["room"])
             if kind == "document":
                 await context.bot.send_document(chat_id=chat_id, **_topic(chat_id), document=file_id, caption=caption)
             else:
                 await context.bot.send_photo(chat_id=chat_id, **_topic(chat_id), photo=file_id, caption=caption)
         except Exception as e:
             logger.warning("Could not send room photo reminder to chat %s: %s", chat_id, e)
+
