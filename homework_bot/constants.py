@@ -3,7 +3,21 @@
 Nothing here reads the environment or imports anything else in the package.
 """
 
+# Subjects of the CURRENT semester — the only ones offered when adding a task
+# or a lesson (bot buttons and the Mini App). To start a new semester: edit
+# this list (and SUBJECT_EMOJI / syllabi.py), deploy, then run /newsemester.
 SUBJECTS = [
+    ("ic", "IC"),
+    ("fl2", "Foreign Language 2"),
+    ("hok", "History of Kazakhstan"),
+    ("ads", "ADS"),
+    ("pe", "Physical Education"),
+    ("calc1", "Calculus 1"),
+]
+# Previous semester. Not offered any more, but kept so that old tasks / saved
+# grades that still carry these codes keep showing a proper name instead of
+# crashing the list with a KeyError.
+LEGACY_SUBJECTS = [
     ("ict", "ICT"),
     ("itp", "ITP"),
     ("psy", "Psychology"),
@@ -11,13 +25,17 @@ SUBJECTS = [
     ("dm", "Discrete Mathematics"),
     ("flb2", "(English) Foreign Lang B2"),
     ("chn", "Китайский язык"),
-    ("pe", "Физра"),
 ]
-SUBJECT_NAME = dict(SUBJECTS)
+ACTIVE_SUBJECT_CODES = frozenset(code for code, _ in SUBJECTS)
+LEGACY_SUBJECT_CODES = frozenset(code for code, _ in LEGACY_SUBJECTS) - ACTIVE_SUBJECT_CODES
+SUBJECT_NAME = dict(LEGACY_SUBJECTS + SUBJECTS)
 SUBJECT_EMOJI = {
+    "ic": "💻", "fl2": "🌍", "hok": "🏛", "ads": "🧮", "pe": "🏃", "calc1": "📐",
+    # previous semester
     "ict": "💻", "itp": "🖥", "psy": "🧠", "soc": "🧑‍🤝‍🧑",
-    "dm": "🔢", "flb2": "🌍", "chn": "🇨🇳", "pe": "🏃",
+    "dm": "🔢", "flb2": "🌍", "chn": "🇨🇳",
 }
+
 # ---------------------------------------------------------------------------
 # Fun reply actions ("обнять", "ударить", etc.) — Iris-bot style. Reply to
 # someone's message with one of these words (no slash, just the plain word)
@@ -76,3 +94,4 @@ MONTH_NAMES_RU = [
     "", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
     "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
 ]
+
