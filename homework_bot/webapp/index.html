@@ -116,6 +116,7 @@
   .three { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 10px; }
   .sheet .btns { display: grid; gap: 8px; margin-top: 18px; }
   .note { font-size: 13px; color: var(--hint); margin-top: 6px; }
+  .break { font-size: 13px; color: var(--hint); text-align: center; padding: 6px 0 2px; }
   .skel { height: 64px; background: linear-gradient(90deg, var(--bg) 25%, color-mix(in srgb, var(--hint) 12%, var(--bg)) 50%, var(--bg) 75%);
     background-size: 200% 100%; animation: shimmer 1.2s linear infinite; }
   @keyframes shimmer { to { background-position: -200% 0; } }
@@ -291,6 +292,11 @@ function lessonCard(l, opts) {
   </div></div>`;
 }
 
+function breakRow(l) {
+  const b = l.break_after;
+  return b ? `<div class="break">☕ Перерыв ${esc(b.text)} · ${esc(b.from)}–${esc(b.to)}</div>` : "";
+}
+
 function bdayPill(b) {
   return `<span class="pill ${b.days_left <= 7 ? "soon" : ""}">${b.days_left === 0 ? "сегодня!" : "через " + b.days_left + " " + plural(b.days_left, "день", "дня", "дней")}</span>`;
 }
@@ -311,7 +317,7 @@ function renderToday() {
   const b = state.birthdays[0];
   let h = "<h2>Пары сегодня</h2>";
   if (!lessons.length) h += `<div class="card empty">Сегодня пар нет 🎉</div>`;
-  lessons.forEach(l => { h += lessonCard(l, { ended: l.time < state.now }); });
+  lessons.forEach(l => { h += lessonCard(l, { ended: l.time < state.now }) + breakRow(l); });
   h += "<h2>Скоро сдавать</h2>";
   if (!soon.length) h += `<div class="card empty">Ближайших дедлайнов нет ✅</div>`;
   soon.forEach(t => { h += taskCard(t, false); });
@@ -377,7 +383,7 @@ function renderWeek() {
   for (let i = 0; i < 7; i++) {
     const list = state.lessons.filter(l => l.weekday === i);
     if (!list.length) continue;
-    h += `<h2>${WEEKDAYS[i]}${i === state.weekday ? " · сегодня" : ""}</h2>` + list.map(l => lessonCard(l, { now: i === state.weekday, del: true })).join("");
+    h += `<h2>${WEEKDAYS[i]}${i === state.weekday ? " · сегодня" : ""}</h2>` + list.map(l => lessonCard(l, { now: i === state.weekday, del: true }) + breakRow(l)).join("");
   }
   if (!state.lessons.length) h += `<div class="card empty" style="margin-top:12px">Расписание пока пустое.</div>`;
   $("v-week").innerHTML = h;
