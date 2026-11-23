@@ -9,7 +9,7 @@ from telegram import Update
 from .ai_format import strip_html_preview
 from .constants import MONTH_NAMES_RU, SUBJECT_EMOJI, SUBJECT_NAME, WEEKDAY_NAMES_RU
 from .db import get_task_attachments, get_tasks
-from .utils import describe_room, is_task_overdue, next_birthday_date, today_kz
+from .utils import describe_room, is_task_overdue, long_break, next_birthday_date, today_kz
 
 
 def format_task_line(row) -> str:
@@ -110,5 +110,9 @@ def format_lessons_block(rows, heading: str) -> str:
     lines = [f"<b>{html.escape(heading)}</b>", "─" * 18]
     for i, r in enumerate(rows, start=1):
         lines.append(f"{i}. {format_lesson_line(r)}")
+        if i < len(rows):
+            gap = long_break(r, rows[i])
+            if gap:
+                lines.append(f"      ☕ <i>перерыв {gap[2]} · {gap[0]}–{gap[1]}</i>")
     return "\n".join(lines)
 
