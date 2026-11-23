@@ -24,7 +24,7 @@ from .config import LMS_HOST, SHARED_TASKS_ID, TIMEZONE, logger, requests
 from .db import (
     add_task,
     find_duplicate_task,
-    get_lms_link,
+    get_all_lms_links,
     list_lms_feeds,
     set_lms_feed_result,
     get_task,
@@ -38,15 +38,15 @@ from .utils import now_kz
 # LMS category (before the " | teacher" part) -> the bot's subject code.
 # Matched by substring, lowercase, first hit wins.
 _SUBJECT_KEYWORDS = [
-    ("foreign language", "flb2"),
-    ("english", "flb2"),
-    ("psychology", "psy"),
-    ("sociology", "soc"),
-    ("discrete", "dm"),
-    ("information and communication", "ict"),
-    ("programming", "itp"),
-    ("chinese", "chn"),
+    ("foreign language", "fl2"),
+    ("english", "fl2"),
+    ("history of kazakhstan", "hok"),
+    ("algorithms and data structures", "ads"),
+    ("data structures", "ads"),
+    ("calculus", "calc1"),
     ("physical education", "pe"),
+    ("introduction to computing", "ic"),
+    ("information and communication", "ic"),
 ]
 
 _DEADLINE_RE = re.compile(r"\b(is due|closes)\s*$", re.IGNORECASE)
@@ -137,11 +137,12 @@ def apply_events(events, now=None) -> dict:
     """Writes the deadline events into the task list. Returns a report."""
     now = now or now_kz()
     report = {"events": len(events), "added": [], "updated": [], "unknown_subject": [], "already": 0}
+    links = get_all_lms_links()  # one query for the whole feed, not one per event
     for ev in events:
         uid, summary, start = ev.get("uid"), (ev.get("summary") or "").strip(), ev.get("start")
         if not uid or not summary or start is None or not _DEADLINE_RE.search(summary):
             continue
-        link = get_lms_link(uid)
+        link = links.get(uid)
         if link is not None:
             task = get_task(link["task_id"])
             if task is None:
@@ -166,6 +167,7 @@ def apply_events(events, now=None) -> dict:
             if same is not None:
                 # already in the list (typed by hand, or via someone else's feed)
                 set_lms_link(uid, same["id"], signature)
+                links[uid] = {"task_id": same["id"], "signature": signature}
                 report["already"] += 1
                 continue
             task_id = add_task(
@@ -173,6 +175,7 @@ def apply_events(events, now=None) -> dict:
                 created_by="LMS", description=description,
             )
             set_lms_link(uid, task_id, signature)
+            links[uid] = {"task_id": task_id, "signature": signature}
             report["added"].append(f"{title} — {start.strftime('%d.%m %H:%M')}")
         elif link["signature"] != signature:
             tid = task["id"]
@@ -184,6 +187,7 @@ def apply_events(events, now=None) -> dict:
                 reset_task_deadline_notified(tid)
             update_task_description(tid, description, False)
             set_lms_link(uid, tid, signature)
+            links[uid] = {"task_id": tid, "signature": signature}
             report["updated"].append(title)
         else:
             report["already"] += 1
@@ -268,3 +272,4 @@ def sync_ics_text(text: str) -> dict:
     if "BEGIN:VCALENDAR" not in text:
         raise RuntimeError("это не файл календаря .ics")
     return apply_events(parse_ics(text))
+
