@@ -62,6 +62,7 @@ _ADMIN = [
     ("exportdb", "Скачать бэкап базы файлом"),
     ("dbstatus", "Какая база сейчас активна"),
     ("backupnow", "Сделать бэкап в резервные базы сейчас"),
+    ("newsemester", "Новый семестр: удалить старое расписание"),
 ]
 
 
@@ -77,3 +78,4 @@ async def sync_commands(bot, admin_ids):
             await bot.set_my_commands(_build(_USER + _ADMIN), scope=BotCommandScopeChat(chat_id=admin_id))
         except Exception:
             pass  # the admin has never opened the bot yet — the shorter menu still works
+
