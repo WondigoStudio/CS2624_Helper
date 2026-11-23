@@ -123,6 +123,22 @@
   .check, .chipbtn, .btn, nav button, .filters button { touch-action: manipulation; }
   .card { contain: content; }
 
+  /* GPA tools */
+  .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: var(--bg2); padding: 4px; border-radius: 14px; margin-bottom: 12px; }
+  .seg button { border: 0; background: transparent; color: var(--text); border-radius: 11px; padding: 9px 6px; font: inherit; font-weight: 600; touch-action: manipulation; }
+  .seg button.on { background: var(--bg); box-shadow: 0 1px 4px rgba(0,0,0,.12); color: var(--accent); }
+  .gprow { display: grid; grid-template-columns: 1fr 76px 58px 34px; gap: 6px; align-items: center; margin-top: 8px; }
+  .gprow input { padding: 8px 9px; min-width: 0; }
+  .gprow .x { border: 0; background: transparent; font-size: 16px; padding: 4px; color: var(--hint); }
+  .gprow .hd { font-size: 12px; color: var(--hint); }
+  .gp-res { margin-top: 12px; }
+  .gp-res table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px; }
+  .gp-res td, .gp-res th { padding: 4px 2px; text-align: left; border-top: 1px solid var(--bg2); }
+  .gp-res th { font-weight: 600; font-size: 12px; color: var(--hint); }
+  .gp-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .gp-scale { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px; }
+  .gp-scale td, .gp-scale th { padding: 5px 4px; text-align: left; border-top: 1px solid var(--bg2); }
+
   /* grades calculator */
   .gr-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
   .gr-big { font-size: 40px; font-weight: 800; letter-spacing: -.03em; line-height: 1.05; }
@@ -528,12 +544,15 @@ function gResultHtml(sy, sc) {
 function renderGrades() {
   const el = $("v-grades");
   if (!GR || !GR.syllabi) { el.innerHTML = `<div class="card empty">Данные силлабусов недоступны.</div>`; return; }
+  const seg = `<div class="seg"><button class="${gui.view !== "gpa" ? "on" : ""}" data-act="gview" data-v="subjects">🎯 Итоговая оценка</button>
+    <button class="${gui.view === "gpa" ? "on" : ""}" data-act="gview" data-v="gpa">📊 GPA</button></div>`;
+  if (gui.view === "gpa") { el.innerHTML = seg + gpaHtml(); gpaRefresh(); return; }
   const subs = state.subjects.filter(s => GR.syllabi[s.code]);
   if (!subs.length) { el.innerHTML = `<div class="card empty">Нет предметов.</div>`; return; }
   if (!gui.sub || !GR.syllabi[gui.sub]) gui.sub = subs[0].code;
   const sy = GR.syllabi[gui.sub];
   const sc = (state.grades && state.grades[gui.sub]) || {};
-  let h = `<div class="filters">${subs.map(s => `<button class="${s.code === gui.sub ? "on" : ""}" data-act="gsub" data-v="${esc(s.code)}">${esc(s.emoji)} ${esc(s.name)}</button>`).join("")}</div>`;
+  let h = seg + `<div class="filters">${subs.map(s => `<button class="${s.code === gui.sub ? "on" : ""}" data-act="gsub" data-v="${esc(s.code)}">${esc(s.emoji)} ${esc(s.name)}</button>`).join("")}</div>`;
   h += `<details class="card" style="margin-top:12px"><summary>📋 ${esc(sy.title)}${sy.credits ? " · " + sy.credits + " кр." : ""} — кратко о курсе</summary>
     <div class="sub" style="margin-top:8px">${sy.final ? `Итог = ${sy.weights[0] * 100}% 1-я аттестация + ${sy.weights[1] * 100}% 2-я + ${sy.weights[2] * 100}% финал` : `Итог = ${sy.weights[0] * 100}% Midterm + ${sy.weights[1] * 100}% Endterm`}</div>
     ${sy.note ? `<div class="note">${esc(sy.note)}</div>` : ""}<ul>${sy.facts.map(f => `<li>${esc(f)}</li>`).join("")}</ul></details>`;
@@ -593,6 +612,151 @@ document.addEventListener("change", (ev) => {
     const sc = (state.grades && state.grades[gui.sub]) || {}, sy = gActive(gui.sub, sc);
     $("gr-need").innerHTML = gtargetText(sy, gcalc(sy, sc), gui.target);
   }
+});
+
+
+/* ---------- GPA tools (same maths as gpa.py) ---------- */
+const GPA_KEY = "hw_gpa_v1";
+const gpaS = { rows: [{ n: "", s: "", c: "" }], prevG: "", prevC: "", attT: "", attM: "", conv: "" };
+try { Object.assign(gpaS, JSON.parse(localStorage.getItem(GPA_KEY) || "{}")); } catch (e) {}
+if (!Array.isArray(gpaS.rows) || !gpaS.rows.length) gpaS.rows = [{ n: "", s: "", c: "" }];
+function gpaSave() { try { localStorage.setItem(GPA_KEY, JSON.stringify(gpaS)); } catch (e) {} }
+const gp2 = (x) => (Math.round(x * 100) / 100).toFixed(2);
+const gpNum = (t) => { const v = Number(String(t == null ? "" : t).trim().replace(",", ".")); return String(t).trim() !== "" && isFinite(v) ? v : null; };
+function gpaGrade(p) {
+  p = Math.min(Math.max(p, 0), 100);
+  for (const r of GR.gpa) if (p >= r.min) return r;
+  return GR.gpa[GR.gpa.length - 1];
+}
+function gpaLetterRow(t) {
+  const k = String(t || "").trim().replace(/[АаВвСс]/g, (c) => ({ "А": "A", "а": "A", "В": "B", "в": "B", "С": "C", "с": "C" }[c])).replace(/[−–—‐]/g, "-").toUpperCase();
+  return GR.gpa.find(r => r.letter === k) || null;
+}
+function gpaRange(row) {
+  const i = GR.gpa.indexOf(row);
+  return row.min + "–" + (i === 0 ? 100 : GR.gpa[i - 1].min - 1);
+}
+// "87,5" / "B+" -> { row, score|null } or null
+function gpaValue(t) {
+  const n = gpNum(String(t || "").replace("%", ""));
+  if (n !== null) return n >= 0 && n <= 100 ? { row: gpaGrade(n), score: n } : null;
+  const r = gpaLetterRow(t);
+  return r ? { row: r, score: null } : null;
+}
+function gpaSemester() {
+  let cr = 0, pts = 0, sc = 0, scCr = 0, used = 0, skipped = 0;
+  const lines = [];
+  gpaS.rows.forEach(r => {
+    if (!String(r.s).trim() && !String(r.c).trim()) return;
+    const v = gpaValue(r.s), c = gpNum(r.c);
+    if (!v || c === null || c <= 0 || c > 60) { skipped++; return; }
+    used++; cr += c; pts += v.row.gpa * c;
+    if (v.score !== null) { sc += v.score * c; scCr += c; }
+    lines.push({ n: r.n, row: v.row, score: v.score, c });
+  });
+  return { gpa: cr > 0 ? pts / cr : null, credits: cr, avg: scCr > 0 ? sc / scCr : null, used, skipped, lines };
+}
+function gpaConvHtml() {
+  const t = String(gpaS.conv || "").trim();
+  if (!t) return `<div class="note">Введи балл (0–100) или букву, например B+.</div>`;
+  const v = gpaValue(t);
+  if (!v) return `<div class="warn">Нужен балл от 0 до 100 или буква (A, A-, B+ …).</div>`;
+  const r = v.row;
+  return `<div class="gr-grid">
+    <div class="box"><span class="sub">${v.score !== null ? "Балл" : "Баллы"}</span><b>${v.score !== null ? fmt2(v.score) + "%" : gpaRange(r) + "%"}</b></div>
+    <div class="box"><span class="sub">GPA</span><b>${gp2(r.gpa)} / 4.00</b></div>
+    <div class="box"><span class="sub">Буква</span><b>${esc(r.letter)}</b></div>
+    <div class="box"><span class="sub">Традиционная</span><b>${esc(r.trad)}</b></div></div>
+    <div class="note" style="margin-top:8px">${esc(r.status)}</div>`;
+}
+function gpaSemHtml() {
+  const s = gpaSemester();
+  if (s.gpa === null) return `<div class="note">Впиши хотя бы один предмет: балл (или букву) и кредиты.</div>` + (s.skipped ? `<div class="warn soft">Не учтено строк: ${s.skipped} — проверь балл и кредиты.</div>` : "");
+  let h = `<div class="gr-head"><div><div class="sub">Семестровый GPA</div><div class="gr-big">${gp2(s.gpa)}<span class="sub" style="font-size:18px"> / 4.00</span></div></div>
+    <div class="gr-letter">${s.credits % 1 ? fmt2(s.credits) : s.credits} кр.</div></div>`;
+  if (s.avg !== null) h += `<div class="sub" style="margin-top:6px">Средний балл (по кредитам): <b>${fmt(s.avg)}%</b></div>`;
+  h += `<table><tr><th>Предмет</th><th>Оценка</th><th>GPA</th><th>Кр.</th></tr>` + s.lines.map((l, i) =>
+    `<tr><td>${esc(l.n || "Предмет " + (i + 1))}</td><td>${l.score !== null ? fmt(l.score) + "% · " : ""}${esc(l.row.letter)}</td><td>${gp2(l.row.gpa)}</td><td>${l.c % 1 ? fmt2(l.c) : l.c}</td></tr>`).join("") + `</table>`;
+  if (s.skipped) h += `<div class="warn soft">Не учтено строк: ${s.skipped} — проверь балл и кредиты.</div>`;
+  return h;
+}
+function gpaCumHtml() {
+  const pg = gpNum(gpaS.prevG), pc = gpNum(gpaS.prevC), s = gpaSemester();
+  if (pg === null && pc === null) return `<div class="note">Впиши текущий GPA и набранные кредиты — добавлю к ним семестр выше. Первый семестр — нули.</div>`;
+  if (pg === null || pg < 0 || pg > 4) return `<div class="warn">GPA — число от 0 до 4.</div>`;
+  if (pc === null || pc < 0 || pc > 400) return `<div class="warn">Кредиты — число от 0 до 400.</div>`;
+  if (s.gpa === null) return `<div class="note">Сначала заполни предметы семестра выше.</div>`;
+  const tot = pc + s.credits, cum = (pg * pc + s.gpa * s.credits) / tot;
+  return `<div class="gr-grid">
+    <div class="box"><span class="sub">Было</span><b>${gp2(pg)}</b><span class="sub">${pc} кр.</span></div>
+    <div class="box"><span class="sub">Семестр</span><b>${gp2(s.gpa)}</b><span class="sub">${s.credits % 1 ? fmt2(s.credits) : s.credits} кр.</span></div></div>
+    <div class="gr-head" style="margin-top:12px"><div><div class="sub">Кумулятивный GPA</div><div class="gr-big">${gp2(cum)}<span class="sub" style="font-size:18px"> / 4.00</span></div></div>
+    <div class="gr-letter">${tot % 1 ? fmt2(tot) : tot} кр.</div></div>`;
+}
+function gpaAttHtml() {
+  const t = gpNum(gpaS.attT), m = gpNum(gpaS.attM);
+  if (t === null && m === null) return `<div class="note">Всего занятий по предмету за курс и сколько пропущено. Можно пропустить не больше 30%.</div>`;
+  if (t === null || m === null || !Number.isInteger(t) || !Number.isInteger(m) || t <= 0 || t > 500 || m < 0 || m > t)
+    return `<div class="warn">Нужны целые числа: всего занятий (1–500) и пропусков (0 … всего).</div>`;
+  const allowed = Math.floor(t * 0.3 + 1e-9), left = allowed - m, pct = m / t * 100;
+  const msg = left < 0 ? `<div class="warn">❌ Лимит превышен на ${-left} — по силлабусу это F или повтор курса.</div>`
+    : left <= 1 ? `<div class="warn soft">⚠️ ${left === 1 ? "Осталось пропусков: 1." : "Лимит исчерпан: следующий пропуск будет лишним."}</div>`
+    : `<div class="goodbox">✅ Можно пропустить ещё: ${left}</div>`;
+  return `<div class="gr-grid">
+    <div class="box"><span class="sub">Пропущено</span><b>${m} (${fmt(pct)}%)</b></div>
+    <div class="box"><span class="sub">Максимум (30%)</span><b>${allowed}</b></div></div>` + msg;
+}
+function gpaRowsHtml() {
+  return `<div class="gprow"><span class="hd">Предмет</span><span class="hd">Балл / буква</span><span class="hd">Кредиты</span><span></span></div>` +
+    gpaS.rows.map((r, i) => `<div class="gprow"><input data-gp="n" data-i="${i}" maxlength="40" placeholder="Название" value="${esc(r.n)}">
+      <input data-gp="s" data-i="${i}" inputmode="text" autocomplete="off" placeholder="90 / B+" value="${esc(r.s)}">
+      <input data-gp="c" data-i="${i}" inputmode="decimal" autocomplete="off" placeholder="3" value="${esc(r.c)}">
+      <button class="x" data-act="gpadel" data-i="${i}" aria-label="Убрать">✕</button></div>`).join("");
+}
+function gpaHtml() {
+  let h = `<div class="card"><div class="title">🔄 Конвертер GPA</div>
+    <input data-gp="conv" inputmode="text" autocomplete="off" placeholder="Балл 0–100 или буква" style="margin-top:8px" value="${esc(gpaS.conv)}">
+    <div id="gp-conv" class="gp-res">${gpaConvHtml()}</div></div>`;
+  h += `<h2>Семестровый GPA</h2><div class="card"><div class="note" style="margin:0">GPA = Σ(GPA × кредиты) / Σ кредиты. Оценка — баллы 0–100 или буква.</div>
+    <div id="gp-rows">${gpaRowsHtml()}</div>
+    <div class="gp-btns"><button class="chipbtn" data-act="gpaadd">+ Предмет</button><button class="chipbtn" data-act="gpafill">📥 Из моих предметов</button><button class="chipbtn danger" data-act="gpaclear">Очистить</button></div>
+    <div id="gp-sem" class="gp-res">${gpaSemHtml()}</div></div>`;
+  h += `<h2>Кумулятивный GPA</h2><div class="card"><div class="two">
+    <div><label style="margin-top:0">Текущий GPA</label><input data-gp="prevG" inputmode="decimal" autocomplete="off" placeholder="3.45" value="${esc(gpaS.prevG)}"></div>
+    <div><label style="margin-top:0">Кредитов набрано</label><input data-gp="prevC" inputmode="decimal" autocomplete="off" placeholder="60" value="${esc(gpaS.prevC)}"></div></div>
+    <div id="gp-cum" class="gp-res">${gpaCumHtml()}</div></div>`;
+  h += `<h2>Посещаемость</h2><div class="card"><div class="two">
+    <div><label style="margin-top:0">Всего занятий</label><input data-gp="attT" inputmode="numeric" autocomplete="off" placeholder="30" value="${esc(gpaS.attT)}"></div>
+    <div><label style="margin-top:0">Пропущено</label><input data-gp="attM" inputmode="numeric" autocomplete="off" placeholder="5" value="${esc(gpaS.attM)}"></div></div>
+    <div id="gp-att" class="gp-res">${gpaAttHtml()}</div></div>`;
+  h += `<details class="card" style="margin-top:12px"><summary>📊 Шкала оценок</summary><table class="gp-scale"><tr><th>Баллы</th><th>Буква</th><th>GPA</th><th>Оценка</th></tr>` +
+    GR.gpa.map(r => `<tr><td>${gpaRange(r)}</td><td><b>${esc(r.letter)}</b></td><td>${gp2(r.gpa)}</td><td>${esc(r.trad)}</td></tr>`).join("") + `</table></details>`;
+  h += `<div class="note" style="margin:6px 4px">Данные хранятся только на этом устройстве. Расчёт ориентировочный — официальные оценки смотри в LMS.</div>`;
+  return h;
+}
+function gpaRefresh() {
+  const set = (id, html) => { const e = $(id); if (e) e.innerHTML = html; };
+  set("gp-conv", gpaConvHtml()); set("gp-sem", gpaSemHtml()); set("gp-cum", gpaCumHtml()); set("gp-att", gpaAttHtml());
+}
+function gpaFill() {
+  const rows = [];
+  state.subjects.filter(s => GR.syllabi[s.code]).forEach(s => {
+    const sy = GR.syllabi[s.code], sc = (state.grades && state.grades[s.code]) || {};
+    const r = gcalc(gActive(s.code, sc), sc);
+    const val = r.all ? r.cur : r.pace !== null ? r.pace * 100 : null;
+    rows.push({ n: s.name, s: val === null ? "" : String(Math.round(val * 10) / 10), c: sy.credits ? String(sy.credits) : "" });
+  });
+  if (!rows.length) { toast("Нет предметов"); return; }
+  gpaS.rows = rows; gpaSave();
+  const e = $("gp-rows"); if (e) e.innerHTML = gpaRowsHtml();
+  gpaRefresh();
+  toast("Подставил. Для незавершённых предметов взят прогноз в текущем темпе");
+}
+document.addEventListener("input", (ev) => {
+  const el = ev.target, k = el.dataset && el.dataset.gp;
+  if (!k || !GR || !GR.gpa) return;
+  if (k === "n" || k === "s" || k === "c") gpaS.rows[Number(el.dataset.i)][k] = el.value; else gpaS[k] = el.value;
+  gpaSave(); gpaRefresh();
 });
 
 const VIEWS = { today: renderToday, tasks: renderTasks, cal: renderCal, week: renderWeek, grades: renderGrades, more: renderMore };
@@ -786,10 +950,24 @@ document.addEventListener("click", async (ev) => {
     case "calday": ui.calDay = el.dataset.iso; render(); break;
     case "gmode": if (!gui.mode) gui.mode = {}; gui.mode[gui.sub] = el.dataset.v; dirty.add("grades"); renderView("grades"); break;
     case "gsub": gui.sub = el.dataset.v; dirty.add("grades"); renderView("grades"); break;
+    case "gview": gui.view = el.dataset.v; dirty.add("grades"); renderView("grades"); window.scrollTo(0, 0); break;
+    case "gpaadd": if (gpaS.rows.length < 20) { gpaS.rows.push({ n: "", s: "", c: "" }); gpaSave(); $("gp-rows").innerHTML = gpaRowsHtml(); gpaRefresh(); } break;
+    case "gpadel": gpaS.rows.splice(Number(el.dataset.i), 1); if (!gpaS.rows.length) gpaS.rows.push({ n: "", s: "", c: "" }); gpaSave(); $("gp-rows").innerHTML = gpaRowsHtml(); gpaRefresh(); break;
+    case "gpafill": gpaFill(); break;
+    case "gpaclear": gpaS.rows = [{ n: "", s: "", c: "" }]; gpaSave(); $("gp-rows").innerHTML = gpaRowsHtml(); gpaRefresh(); break;
     case "closesheet": closeSheet(); break;
   }
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden && state && !$("overlay").classList.contains("show")) load(); });
+try {
+  // the bot opens the app on a given tab: ?tab=grades (calculator) or ?tab=gpa (GPA tools)
+  const want = new URLSearchParams(location.search).get("tab");
+  if (want === "grades" || want === "gpa") {
+    ui.tab = "grades"; if (want === "gpa") gui.view = "gpa";
+    document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === "grades"));
+    document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.id === "v-grades"));
+  }
+} catch (e) {}
 boot();
 });
 </script>
