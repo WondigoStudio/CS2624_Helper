@@ -67,6 +67,7 @@ _ADMIN = [
     ("dbstatus", "Какая база сейчас активна"),
     ("backupnow", "Сделать бэкап в резервные базы сейчас"),
     ("newsemester", "Новый семестр: удалить старое расписание"),
+    ("audience", "Кому бот пишет сам: только личка с разрешением / все чаты"),
     ("vacation", "Режим каникул: бот никому не пишет в выбранный период"),
 ]
 
@@ -83,4 +84,3 @@ async def sync_commands(bot, admin_ids):
             await bot.set_my_commands(_build(_USER + _ADMIN), scope=BotCommandScopeChat(chat_id=admin_id))
         except Exception:
             pass  # the admin has never opened the bot yet — the shorter menu still works
-

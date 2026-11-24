@@ -10,7 +10,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from . import vacation
+from . import audience, vacation
 from .config import DATABASE_URL_BACKUP2, DATABASE_URL_BACKUP3, SHARED_TASKS_ID, logger
 from .constants import SUBJECT_NAME, WEEKDAY_NAMES_FULL_RU
 from .handlers.weather import morning_weather_text
@@ -186,7 +186,7 @@ def _chats_due_now(offset_minutes: int, default_time: str, flag: str = None):
     return [
         row["chat_id"]
         for row in list_known_users()
-        if row["chat_id"] not in muted and _adaptive_target_time(firsts.get(row["chat_id"]), row["chat_id"], row["chat_type"],
+        if row["chat_id"] not in muted and audience.allowed(row["chat_id"]) and _adaptive_target_time(firsts.get(row["chat_id"]), row["chat_id"], row["chat_type"],
                                  offset_minutes, default_time) == now_str
     ]
 
@@ -439,8 +439,8 @@ TASK_DEADLINE_LEAD_MINUTES = 60
 
 async def check_task_deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
     """Runs every minute: for every undone task that has an exact due_time
-    set, fires a one-off "1 hour left" heads-up to every known chat (groups
-    and private chats alike) once its deadline comes within
+    set, fires a one-off "1 hour left" heads-up to every chat the audience
+    setting allows (by default: people with a permission, in private) once its deadline comes within
     TASK_DEADLINE_LEAD_MINUTES — using "<=" rather than "==" so a missed
     exact minute (host spin-down, scheduler misfire) still catches it late
     instead of silently skipping it, same reasoning as check_reminders.
@@ -465,7 +465,7 @@ async def check_task_deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
         finished = await asyncio.to_thread(users_who_finished, row["id"])
         muted = await asyncio.to_thread(chats_with_flag_off, "deadlines")
         for chat_id in await asyncio.to_thread(all_chat_ids):
-            if chat_id in muted:
+            if chat_id in muted or not audience.allowed(chat_id):
                 continue
             if chat_id in finished:
                 continue  # this person already marked it done — no need to nag
@@ -491,7 +491,7 @@ async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
     muted = await asyncio.to_thread(chats_with_flag_off, "lessons")
     for r in rows:
         chat_id = r["chat_id"]
-        if chat_id in muted:
+        if chat_id in muted or not audience.allowed(chat_id):
             continue
         # The same subject in the same room right after the previous lesson (a double
         # lesson): the person is already there, a "10 minutes left" ping would only be noise.
@@ -521,4 +521,3 @@ async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_photo(chat_id=chat_id, **_topic(chat_id), photo=file_id, caption=caption)
         except Exception as e:
             logger.warning("Could not send room photo reminder to chat %s: %s", chat_id, e)
-

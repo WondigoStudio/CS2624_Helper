@@ -85,6 +85,7 @@ from .states import (
 from . import menu_kb as K
 from .menu_kb import MENU_TEXT, entry as menu_entry
 from .handlers.start import app_cmd, start
+from .handlers.audience import audience_callback, audience_cmd
 from .handlers.vacation import vacation_callback, vacation_cmd, vacation_text
 from .handlers.gpa import gpa_callback, gpa_text, risk_cmd
 from .handlers.menu import gpa_reset_handler, gpa_section_cmd, hide_menu, menu_cmd, menu_handler
@@ -503,6 +504,8 @@ def main():
     app.add_handler(CommandHandler("roomphotos", roomphotos_cmd))
     app.add_handler(CommandHandler("users", users_cmd))
     app.add_handler(CommandHandler("dbstatus", dbstatus_cmd))
+    app.add_handler(CommandHandler("audience", audience_cmd))
+    app.add_handler(CallbackQueryHandler(audience_callback, pattern="^aud:"))
     app.add_handler(CommandHandler("vacation", vacation_cmd))
     app.add_handler(CallbackQueryHandler(vacation_callback, pattern="^vac:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~MENU_TEXT & filters.ChatType.PRIVATE, vacation_text), group=3)
@@ -647,4 +650,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
