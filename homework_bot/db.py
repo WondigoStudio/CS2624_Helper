@@ -588,6 +588,10 @@ def init_db(target_url: str = None):
         conn.execute("ALTER TABLE group_settings ADD COLUMN morning_off INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)")
     conn.execute(
+        "CREATE TABLE IF NOT EXISTS chat_send (chat_id BIGINT NOT NULL, kind TEXT NOT NULL, "
+        "value INTEGER NOT NULL, PRIMARY KEY (chat_id, kind))"
+    )
+    conn.execute(
         "CREATE TABLE IF NOT EXISTS group_flags (chat_id BIGINT NOT NULL, flag TEXT NOT NULL, "
         "value INTEGER NOT NULL, PRIMARY KEY (chat_id, flag))"
     )
@@ -638,6 +642,8 @@ _CHAT_REFRESH_SECONDS = 300
 def register_chat(update: Update):
     chat_id = update.effective_chat.id
     chat_type = update.effective_chat.type  # "private", "group", "supergroup", ...
+    if chat_id < 0 and chat_id in ignored_chats():  # a group the admin removed from the list
+        return
     user = update.effective_user
     username = user.username if user else None
     first_name = user.first_name if user else None
@@ -1397,7 +1403,7 @@ def delete_birthday(birthday_id: int):
 _MIRROR_TABLES = [
     "tasks", "task_attachments", "task_done", "lms_synced", "lms_feeds", "chats", "schedule", "room_photos", "actions",
     "schedule_allowed_users", "user_perms", "report_settings", "group_members", "report_chats",
-    "reminders", "birthdays", "chat_threads", "grades", "anon_messages", "anon_blocks", "anon_optout", "group_settings", "group_roles", "group_flags", "bot_settings",
+    "reminders", "birthdays", "chat_threads", "grades", "anon_messages", "anon_blocks", "anon_optout", "group_settings", "group_roles", "group_flags", "bot_settings", "chat_send",
 ]
 
 
@@ -1599,6 +1605,58 @@ def set_setting(key: str, value):
         )
     conn.commit()
     conn.close()
+
+
+# --- Per-chat switches for what the bot sends on its own (admin, /audience) ------
+def chat_send_overrides() -> dict:
+    """{(chat_id, kind): 1 | 0} — explicit admin choices; a missing key means "by default"."""
+    def load():
+        conn = db()
+        rows = conn.execute("SELECT chat_id, kind, value FROM chat_send").fetchall()
+        conn.close()
+        return {(r["chat_id"], r["kind"]): int(r["value"]) for r in rows}
+    return cached_read("chat_send", ("chat_send",), load)
+
+
+def set_chat_send(chat_id: int, kind: str, value):
+    """value True/False = force on/off, None = back to the default."""
+    conn = db()
+    if value is None:
+        conn.execute("DELETE FROM chat_send WHERE chat_id = ? AND kind = ?", (chat_id, kind))
+    else:
+        conn.execute(
+            "INSERT INTO chat_send (chat_id, kind, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(chat_id, kind) DO UPDATE SET value = excluded.value",
+            (chat_id, kind, 1 if value else 0),
+        )
+    conn.commit()
+    conn.close()
+
+
+def ignored_chats() -> set:
+    raw = get_setting("ignored_chats") or ""
+    return {int(x) for x in raw.split(",") if x.strip().lstrip("-").isdigit()}
+
+
+def set_chat_ignored(chat_id: int, on: bool):
+    ids = ignored_chats()
+    (ids.add if on else ids.discard)(chat_id)
+    set_setting("ignored_chats", ",".join(str(i) for i in sorted(ids)) or None)
+
+
+_CHAT_TABLES = ["schedule", "room_photos", "group_members", "report_chats", "report_settings", "reminders",
+                "chat_threads", "group_settings", "group_flags", "group_roles", "chat_send", "chats"]
+
+
+def delete_chat(chat_id: int):
+    """Removes a chat (a group, normally) from the list together with its own settings, timetable,
+    reminders and room photos. Shared tasks, grades and the activity history stay."""
+    conn = db()
+    for table in _CHAT_TABLES:
+        conn.execute(f"DELETE FROM {table} WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+    conn.close()
+    _chat_seen.pop(chat_id, None)
 
 
 # --- Anonymous messages -----------------------------------------------------
@@ -1892,4 +1950,3 @@ def set_poll_enabled(chat_id: int, on: bool):
     )
     conn.commit()
     conn.close()
-

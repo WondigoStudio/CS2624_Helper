@@ -176,9 +176,10 @@ def _adaptive_target_time(first_lesson, chat_id: int, chat_type, offset_minutes:
     return default_time
 
 
-def _chats_due_now(offset_minutes: int, default_time: str, flag: str = None):
+def _chats_due_now(offset_minutes: int, default_time: str, flag: str = None, kinds=()):
     """Blocking (DB). Chats whose personal send time is this minute — a single
-    pass over the data for all chats instead of a query per chat."""
+    pass over the data for all chats instead of a query per chat. `kinds`: the
+    kinds of message this run may send; a chat must be allowed at least one."""
     now = now_kz()
     now_str = now.strftime("%H:%M")
     firsts = first_lesson_times(now.weekday())
@@ -186,8 +187,10 @@ def _chats_due_now(offset_minutes: int, default_time: str, flag: str = None):
     return [
         row["chat_id"]
         for row in list_known_users()
-        if row["chat_id"] not in muted and audience.allowed(row["chat_id"]) and _adaptive_target_time(firsts.get(row["chat_id"]), row["chat_id"], row["chat_type"],
-                                 offset_minutes, default_time) == now_str
+        if row["chat_id"] not in muted
+        and (any(audience.allowed(row["chat_id"], k) for k in kinds) if kinds else audience.allowed(row["chat_id"]))
+        and _adaptive_target_time(firsts.get(row["chat_id"]), row["chat_id"], row["chat_type"],
+                                  offset_minutes, default_time) == now_str
     ]
 
 
@@ -199,16 +202,16 @@ async def check_adaptive_schedule(context: ContextTypes.DEFAULT_TYPE):
     if vacation.silent():  # vacation mode: the bot stays quiet
         return
     weekday = now_kz().weekday()
-    due = await asyncio.to_thread(_chats_due_now, SCHEDULE_OFFSET_MINUTES, DEFAULT_SCHEDULE_TIME)
+    due = await asyncio.to_thread(_chats_due_now, SCHEDULE_OFFSET_MINUTES, DEFAULT_SCHEDULE_TIME, None, ("schedule", "weather"))
     no_schedule = await asyncio.to_thread(chats_with_flag_off, "schedule")
     for chat_id in due:
         try:
-            if chat_id not in no_schedule:
+            if chat_id not in no_schedule and audience.allowed(chat_id, "schedule"):
                 await send_morning_schedule_for_chat(context.bot, chat_id, weekday)
         except Exception as e:
             logger.warning("Could not send morning schedule to chat %s: %s", chat_id, e)
         try:
-            no_weather = chat_id in await asyncio.to_thread(chats_with_flag_off, "weather")
+            no_weather = chat_id in await asyncio.to_thread(chats_with_flag_off, "weather") or not audience.allowed(chat_id, "weather")
             weather = await morning_weather_text() if weekday != 6 and not no_weather else None  # в воскресенье без погоды
             if weather:
                 await context.bot.send_message(chat_id=chat_id, **_topic(chat_id), text=weather, parse_mode=ParseMode.HTML)
@@ -241,7 +244,7 @@ async def check_adaptive_tasks(context: ContextTypes.DEFAULT_TYPE):
     for a private chat with a schedule."""
     if vacation.silent():  # vacation mode: the bot stays quiet
         return
-    due = await asyncio.to_thread(_chats_due_now, TASKS_OFFSET_MINUTES, DEFAULT_TASKS_TIME, "tasks")
+    due = await asyncio.to_thread(_chats_due_now, TASKS_OFFSET_MINUTES, DEFAULT_TASKS_TIME, "tasks", ("tasks",))
     if not due:
         return
     today_iso = today_kz().isoformat()
@@ -465,7 +468,7 @@ async def check_task_deadline_reminders(context: ContextTypes.DEFAULT_TYPE):
         finished = await asyncio.to_thread(users_who_finished, row["id"])
         muted = await asyncio.to_thread(chats_with_flag_off, "deadlines")
         for chat_id in await asyncio.to_thread(all_chat_ids):
-            if chat_id in muted or not audience.allowed(chat_id):
+            if chat_id in muted or not audience.allowed(chat_id, "deadlines"):
                 continue
             if chat_id in finished:
                 continue  # this person already marked it done — no need to nag
@@ -491,7 +494,7 @@ async def check_lesson_reminders(context: ContextTypes.DEFAULT_TYPE):
     muted = await asyncio.to_thread(chats_with_flag_off, "lessons")
     for r in rows:
         chat_id = r["chat_id"]
-        if chat_id in muted or not audience.allowed(chat_id):
+        if chat_id in muted or not audience.allowed(chat_id, "lessons"):
             continue
         # The same subject in the same room right after the previous lesson (a double
         # lesson): the person is already there, a "10 minutes left" ping would only be noise.
